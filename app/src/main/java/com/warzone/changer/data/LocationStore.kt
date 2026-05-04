@@ -1,51 +1,44 @@
 package com.warzone.changer.data
 
 import android.content.Context
-import com.warzone.changer.App
 import com.warzone.changer.model.SelectedLocation
 
+/**
+ * 战区位置存储
+ */
 object LocationStore {
-    private const val PREFS = "location_prefs"
 
-    private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private const val PREF_NAME = "warzone_prefs"
+    private const val KEY_PROVINCE = "province"
+    private const val KEY_CITY = "city"
+    private const val KEY_DISTRICT = "district"
+    private const val KEY_ADCODE = "adcode"
 
-    fun save(ctx: Context, loc: SelectedLocation) {
-        prefs(ctx).edit()
-            .putString("province", loc.province)
-            .putString("city", loc.city)
-            .putString("district", loc.district)
-            .putString("adcode", loc.adcode)
-            .putDouble("lat", loc.latitude)
-            .putDouble("lng", loc.longitude)
-            .putString("addr", loc.formattedAddress)
+    fun saveLocation(context: Context, location: SelectedLocation) {
+        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_PROVINCE, location.province)
+            .putString(KEY_CITY, location.city)
+            .putString(KEY_DISTRICT, location.district)
+            .putString(KEY_ADCODE, location.adcode)
             .apply()
     }
 
-    fun get(ctx: Context): SelectedLocation? {
-        val p = prefs(ctx)
-        val adcode = p.getString("adcode", "") ?: ""
-        if (adcode.isEmpty()) return null
+    fun getSelectedLocation(context: Context): SelectedLocation? {
+        val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        val adcode = prefs.getString(KEY_ADCODE, null) ?: return null
         return SelectedLocation(
-            province = p.getString("province", "") ?: "",
-            city = p.getString("city", "") ?: "",
-            district = p.getString("district", "") ?: "",
-            adcode = adcode,
-            latitude = p.getDouble("lat", 0.0),
-            longitude = p.getDouble("lng", 0.0),
-            formattedAddress = p.getString("addr", "") ?: ""
+            province = prefs.getString(KEY_PROVINCE, "") ?: "",
+            city = prefs.getString(KEY_CITY, "") ?: "",
+            district = prefs.getString(KEY_DISTRICT, "") ?: "",
+            adcode = adcode
         )
     }
 
-    fun has(ctx: Context): Boolean = prefs(ctx).contains("adcode")
-
-    fun clear(ctx: Context) { prefs(ctx).edit().clear().apply() }
-}
-
-private fun android.content.SharedPreferences.Editor.putDouble(key: String, value: Double): android.content.SharedPreferences.Editor {
-    putLong(key, java.lang.Double.doubleToRawLongBits(value))
-    return this
-}
-
-private fun android.content.SharedPreferences.getDouble(key: String, default: Double): Double {
-    return java.lang.Double.longBitsToDouble(getLong(key, java.lang.Double.doubleToRawLongBits(default)))
+    fun clearLocation(context: Context) {
+        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
+    }
 }

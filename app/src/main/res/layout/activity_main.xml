@@ -3,44 +3,91 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:gravity="center"
-    android:padding="24dp">
+    android:padding="24dp"
+    android:background="#1a1a2e">
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="王者荣耀战区修改器"
-        android:textSize="24sp"
+        android:text="WarZoneChanger"
+        android:textSize="28sp"
+        android:textColor="#e94560"
         android:textStyle="bold"
-        android:layout_marginBottom="32dp" />
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="32dp"/>
 
     <TextView
-        android:id="@+id/tvStatus"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="🔴 已停止"
-        android:textSize="18sp"
-        android:layout_marginBottom="16dp" />
+        android:text="王者荣耀战区切换"
+        android:textSize="14sp"
+        android:textColor="#999999"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="8dp"/>
 
-    <TextView
-        android:id="@+id/tvLocation"
-        android:layout_width="wrap_content"
+    <!-- 当前战区 -->
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="请先选择战区"
-        android:textSize="16sp"
-        android:layout_marginBottom="32dp" />
+        android:orientation="vertical"
+        android:background="#16213e"
+        android:padding="20dp"
+        android:layout_marginTop="40dp"
+        android:layout_marginBottom="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="当前战区"
+            android:textSize="12sp"
+            android:textColor="#666666"/>
+
+        <TextView
+            android:id="@+id/tv_current_location"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="未选择战区"
+            android:textSize="20sp"
+            android:textColor="#FFFFFF"
+            android:layout_marginTop="8dp"/>
+
+        <TextView
+            android:id="@+id/tv_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="○ 已停止"
+            android:textSize="14sp"
+            android:textColor="#9E9E9E"
+            android:layout_marginTop="8dp"/>
+    </LinearLayout>
 
     <Button
-        android:id="@+id/btnPickLocation"
-        android:layout_width="200dp"
-        android:layout_height="wrap_content"
+        android:id="@+id/btn_pick_location"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
         android:text="选择战区"
-        android:layout_marginBottom="16dp" />
+        android:textSize="16sp"
+        android:textColor="#FFFFFF"
+        android:background="#0f3460"
+        android:layout_marginBottom="12dp"/>
 
     <Button
-        android:id="@+id/btnToggle"
-        android:layout_width="200dp"
+        android:id="@+id/btn_toggle"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:text="启动"
+        android:textSize="18sp"
+        android:textColor="#FFFFFF"
+        android:textStyle="bold"
+        android:background="#e94560"/>
+
+    <TextView
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="启动" />
+        android:text="启动后打开王者荣耀即可切换战区"
+        android:textSize="12sp"
+        android:textColor="#555555"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="24dp"/>
 
 </LinearLayout>

@@ -1,108 +1,124 @@
 package com.warzone.changer.ui
 
-import android.content.BroadcastReceiver
-import android.content.Context
+import android.app.Activity
 import android.content.Intent
-import android.content.IntentFilter
 import android.net.VpnService
-import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
+import android.widget.Toast
+import android.app.AlertDialog
 import com.warzone.changer.R
 import com.warzone.changer.data.LocationStore
 import com.warzone.changer.service.VpnProxyService
 
-class MainActivity : AppCompatActivity() {
+/**
+ * 主界面
+ * 简洁设计：显示当前战区 + 启动/停止按钮
+ */
+class MainActivity : Activity() {
 
+    companion object {
+        private const val REQUEST_VPN = 100
+        private const val REQUEST_LOCATION = 200
+    }
+
+    private lateinit var tvCurrentLocation: TextView
+    private lateinit var tvStatus: TextView
     private lateinit var btnToggle: Button
     private lateinit var btnPickLocation: Button
-    private lateinit var tvStatus: TextView
-    private lateinit var tvLocation: TextView
-
-    private val vpnLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) {
-        startVpn()
-    }
-
-    private val stateReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            runOnUiThread { updateUI() }
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        btnToggle = findViewById(R.id.btnToggle)
-        btnPickLocation = findViewById(R.id.btnPickLocation)
-        tvStatus = findViewById(R.id.tvStatus)
-        tvLocation = findViewById(R.id.tvLocation)
+        tvCurrentLocation = findViewById(R.id.tv_current_location)
+        tvStatus = findViewById(R.id.tv_status)
+        btnToggle = findViewById(R.id.btn_toggle)
+        btnPickLocation = findViewById(R.id.btn_pick_location)
+
+        btnPickLocation.setOnClickListener {
+            startActivityForResult(
+                Intent(this, LocationPickerActivity::class.java),
+                REQUEST_LOCATION
+            )
+        }
 
         btnToggle.setOnClickListener {
             if (VpnProxyService.isRunning) {
-                stopVpn()
+                stopVpnService()
             } else {
-                startVpn()
+                requestVpnPermission()
             }
         }
 
-        btnPickLocation.setOnClickListener {
-            startActivity(Intent(this, LocationPickerActivity::class.java))
-        }
+        updateUI()
     }
 
     override fun onResume() {
         super.onResume()
         updateUI()
-        ContextCompat.registerReceiver(
-            this, stateReceiver,
-            IntentFilter("com.warzone.changer.VPN_STATE"),
-            ContextCompat.RECEIVER_NOT_EXPORTED
-        )
     }
 
-    override fun onPause() {
-        super.onPause()
-        try { unregisterReceiver(stateReceiver) } catch (_: Exception) {}
-    }
-
-    private fun startVpn() {
-        if (VpnProxyService.isRunning) return
-        val intent = VpnService.prepare(this)
-        if (intent != null) {
-            vpnLauncher.launch(intent)
-        } else {
-            doStartVpn()
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        when (requestCode) {
+            REQUEST_VPN -> {
+                if (resultCode == RESULT_OK) {
+                    startVpnService()
+                } else {
+                    Toast.makeText(this, "VPN 权限被拒绝", Toast.LENGTH_SHORT).show()
+                }
+            }
+            REQUEST_LOCATION -> updateUI()
         }
     }
 
-    private fun doStartVpn() {
+    private fun requestVpnPermission() {
+        val intent = VpnService.prepare(this)
+        if (intent != null) {
+            startActivityForResult(intent, REQUEST_VPN)
+        } else {
+            startVpnService()
+        }
+    }
+
+    private fun startVpnService() {
+        val location = LocationStore.getSelectedLocation(this)
+        if (location == null) {
+            Toast.makeText(this, "请先选择战区", Toast.LENGTH_SHORT).show()
+            return
+        }
         startService(Intent(this, VpnProxyService::class.java))
+        Toast.makeText(this, "战区切换已启动", Toast.LENGTH_SHORT).show()
         updateUI()
     }
 
-    private fun stopVpn() {
-        val stopIntent = Intent(this, VpnProxyService::class.java).apply { action = "STOP" }
-        startService(stopIntent)
+    private fun stopVpnService() {
+        val intent = Intent(this, VpnProxyService::class.java).apply {
+            action = "STOP"
+        }
+        startService(intent)
+        Toast.makeText(this, "已停止", Toast.LENGTH_SHORT).show()
         updateUI()
     }
 
     private fun updateUI() {
-        val running = VpnProxyService.isRunning
-        tvStatus.text = if (running) "🟢 运行中" else "🔴 已停止"
-        btnToggle.text = if (running) "停止" else "启动"
-
-        val loc = LocationStore.get(this)
-        tvLocation.text = if (loc != null && loc.isValid()) {
-            "当前战区：${loc.province} ${loc.city} ${loc.district}"
+        val location = LocationStore.getSelectedLocation(this)
+        if (location != null) {
+            tvCurrentLocation.text = location.displayName
         } else {
-            "请先选择战区"
+            tvCurrentLocation.text = "未选择战区"
+        }
+
+        if (VpnProxyService.isRunning) {
+            tvStatus.text = "● 运行中"
+            tvStatus.setTextColor(0xFF4CAF50.toInt())
+            btnToggle.text = "停止"
+        } else {
+            tvStatus.text = "○ 已停止"
+            tvStatus.setTextColor(0xFF9E9E9E.toInt())
+            btnToggle.text = "启动"
         }
     }
 }

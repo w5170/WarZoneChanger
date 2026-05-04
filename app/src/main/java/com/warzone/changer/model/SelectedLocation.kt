@@ -1,15 +1,16 @@
 package com.warzone.changer.model
 
+/**
+ * 选中的战区位置
+ */
 data class SelectedLocation(
-    val province: String = "",
-    val city: String = "",
-    val district: String = "",
-    val latitude: Double = 0.0,
-    val longitude: Double = 0.0,
-    val adcode: String = "",
-    val formattedAddress: String = ""
+    val province: String,
+    val city: String,
+    val district: String,
+    val adcode: String
 ) {
-    fun isValid(): Boolean = adcode.isNotEmpty()
-
-    fun locationParam(): String = "$latitude,$longitude"
+    val displayName: String
+        get() = if (district.isNotEmpty()) "$province $city $district"
+                else if (city.isNotEmpty()) "$province $city"
+                else province
 }
