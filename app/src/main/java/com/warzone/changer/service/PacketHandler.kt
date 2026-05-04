@@ -254,7 +254,7 @@ class PacketHandler(private val vpnService: VpnService) {
 
                 sendRawTcpResponse(
                     output, srcIp, srcPort, dstIp, dstPort,
-                    respSeq, respAck, resp.code, resp.header("Content-Type", "text/plain"), respBody
+                    respSeq, respAck, resp.code, resp.header("Content-Type", "text/plain") ?: "text/plain", respBody
                 )
                 resp.close()
             } catch (e: Exception) {
