@@ -2,6 +2,9 @@ package com.warzone.changer.ui
 
 import android.app.Activity
 import android.content.Intent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
 import android.net.VpnService
 import android.os.Bundle
 import android.widget.Button
@@ -47,11 +50,29 @@ class MainActivity : AppCompatActivity() {
         }
 
         updateUI()
+
+        // 监听 VPN 状态变化
+        registerReceiver(vpnStateReceiver, IntentFilter("com.warzone.action.VPN_STATE_CHANGED"), RECEIVER_NOT_EXPORTED)
+    }
+
+    private val vpnStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            updateUI()
+        }
     }
 
     override fun onResume() {
         super.onResume()
         updateUI()
+
+        // 监听 VPN 状态变化
+        registerReceiver(vpnStateReceiver, IntentFilter("com.warzone.action.VPN_STATE_CHANGED"), RECEIVER_NOT_EXPORTED)
+    }
+
+    private val vpnStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            updateUI()
+        }
     }
 
     private fun updateUI() {
@@ -117,5 +138,11 @@ class MainActivity : AppCompatActivity() {
                 updateUI()
             }
         }
+    }
+}
+
+    override fun onDestroy() {
+        try { unregisterReceiver(vpnStateReceiver) } catch (_: Exception) {}
+        super.onDestroy()
     }
 }
