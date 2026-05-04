@@ -82,12 +82,13 @@ class VpnProxyService : VpnService() {
 
     private fun forwardTraffic() {
         val fd = vpnInterface?.fileDescriptor ?: return
+        val input = java.io.FileInputStream(fd)
         val buf = java.nio.ByteBuffer.allocate(32767)
 
         while (isRunning) {
             try {
                 buf.clear()
-                val length = fd.read(buf.array())
+                val length = input.read(buf.array())
                 if (length <= 0) {
                     Thread.sleep(10)
                     continue
