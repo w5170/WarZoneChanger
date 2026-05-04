@@ -59,6 +59,8 @@ class VpnProxyService : VpnService() {
             packetHandler?.start(vpnInterface!!)
 
             isRunning = true
+            // 通知 UI 更新状态
+            sendBroadcast(Intent("com.warzone.action.VPN_STATE_CHANGED"))
             Log.i(TAG, "VPN代理已启动 - 战区修改生效中")
         } catch (e: Exception) {
             Log.e(TAG, "启动VPN失败", e)
@@ -94,6 +96,7 @@ class VpnProxyService : VpnService() {
 
     private fun stopVpn() {
         isRunning = false
+        sendBroadcast(Intent("com.warzone.action.VPN_STATE_CHANGED"))
         try {
             packetHandler?.stop()
             packetHandler = null
