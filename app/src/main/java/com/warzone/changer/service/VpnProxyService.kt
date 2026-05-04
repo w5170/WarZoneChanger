@@ -34,15 +34,10 @@ class VpnProxyService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "STOP") { stopVpn(); return START_NOT_STICKY }
         if (isRunning) return START_STICKY
-        Log.i(TAG, "onStartCommand")
         startForeground(NOTIFICATION_ID, createNotification("正在启动..."))
         Thread {
             try { startVpn() }
-            catch (e: Exception) {
-                Log.e(TAG, "VPN failed", e)
-                sendStatus(false, e.message ?: "未知错误")
-                stopSelf()
-            }
+            catch (e: Exception) { Log.e(TAG, "VPN failed", e); sendStatus(false, e.message ?: "未知"); stopSelf() }
         }.start()
         return START_STICKY
     }
@@ -52,57 +47,47 @@ class VpnProxyService : VpnService() {
         val adcode = location?.adcode ?: "110101"
         Log.i(TAG, "adcode=$adcode")
 
-        // 解析目标IP
         val targetIps = mutableSetOf<String>()
         try {
             for (addr in InetAddress.getAllByName("apis.map.qq.com")) {
                 targetIps.add(addr.hostAddress!!)
                 Log.i(TAG, "Target: ${addr.hostAddress}")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "DNS fail", e)
-            targetIps.add("101.89.46.62"); targetIps.add("101.89.46.61")
-        }
+        } catch (e: Exception) { targetIps.add("101.89.46.62"); targetIps.add("101.89.46.61") }
 
         val fakeResp = buildFakeHttpResponse(adcode)
 
-        // ===== 核心：只路由目标IP，其他流量不碰 =====
         val builder = Builder()
-            .addAddress("10.0.0.2", 32)
-            .setSession("WarZoneChanger")
+            .addAddress("10.0.0.2", 24)
+            .addRoute("0.0.0.0", 0)
+            .addDnsServer("8.8.8.8")
+            .addDnsServer("114.114.114.114")
             .setMtu(1500)
+            .setSession("WarZoneChanger")
             .setBlocking(true)
 
-        // 只添加目标IP路由
-        for (ip in targetIps) {
-            builder.addRoute(ip, 32)
-            Log.i(TAG, "Route: $ip/32")
-        }
-
-        Log.i(TAG, "Establishing VPN...")
         vpnInterface = builder.establish()
-        if (vpnInterface == null) {
-            sendStatus(false, "VPN建立失败，请检查权限")
-            stopSelf(); return
-        }
-        Log.i(TAG, "VPN OK, fd=${vpnInterface!!.fd}")
+        if (vpnInterface == null) { sendStatus(false, "VPN建立失败"); stopSelf(); return }
+        Log.i(TAG, "VPN established")
 
+        val fd = vpnInterface!!
         packetHandler = PacketHandler(
-            tunInput = FileInputStream(vpnInterface!!.fileDescriptor),
-            tunOutput = FileOutputStream(vpnInterface!!.fileDescriptor),
+            tunInput = FileInputStream(fd.fileDescriptor),
+            tunOutput = FileOutputStream(fd.fileDescriptor),
             targetIps = targetIps,
-            fakeHttpResponse = fakeResp
+            fakeHttpResponse = fakeResp,
+            protectFn = { s -> protect(s) },
+            protectDg = { s -> protect(s) }
         )
 
         isRunning = true
         packetHandler?.start()
         sendStatus(true, null)
         updateNotification("运行中 adcode=$adcode")
-        Log.i(TAG, "Running!")
+        Log.i(TAG, "Running! Targets: $targetIps")
     }
 
     private fun stopVpn() {
-        Log.i(TAG, "Stopping")
         isRunning = false; packetHandler?.stop(); packetHandler = null
         try { vpnInterface?.close() } catch (_: Exception) {}
         vpnInterface = null; sendStatus(false, null); stopForeground(true); stopSelf()
