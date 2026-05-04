@@ -5,21 +5,22 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.util.Log
-import com.github.megatronking.netbare.NetBare
-import com.github.megatronking.netbare.NetBareConfig
-import com.github.megatronking.netbare.NetBareListener
-import com.github.megatronking.netbare.http.HttpInterceptorFactory
 import com.warzone.changer.App
 import com.warzone.changer.R
-import com.warzone.changer.injector.LocationInjector
 import com.warzone.changer.ui.MainActivity
 
 /**
- * VPN代理服务
- * 使用NetBare库创建本地VPN，拦截并修改王者荣耀的地图API请求
+ * VPN代理服务（替代已删除的 NetBare 库）
+ *
+ * 原理：
+ * 1. VpnService 创建 TUN 虚拟网卡，拦截设备所有网络流量
+ * 2. PacketHandler 直接解析 IP/TCP 数据包
+ * 3. 识别腾讯地图 API (HTTP) 请求并返回假的 adcode 响应
+ * 4. 游戏读到假的 adcode → 设置战区
  */
-class VpnProxyService : VpnService(), NetBareListener {
+class VpnProxyService : VpnService() {
 
     companion object {
         private const val TAG = "VpnProxyService"
@@ -30,12 +31,8 @@ class VpnProxyService : VpnService(), NetBareListener {
             private set
     }
 
-    private var netBare: NetBare? = null
-
-    override fun onCreate() {
-        super.onCreate()
-        netBare = NetBare.get()
-    }
+    private var vpnInterface: ParcelFileDescriptor? = null
+    private var packetHandler: PacketHandler? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -53,10 +50,14 @@ class VpnProxyService : VpnService(), NetBareListener {
     private fun startVpn() {
         try {
             startForeground(NOTIFICATION_ID, createNotification())
-            val config = NetBareConfig.Builder()
-                .addInterceptorFactory(HttpInterceptorFactory { LocationInjector(applicationContext) })
-                .build()
-            netBare?.start(config)
+
+            // 创建 VPN 接口
+            vpnInterface = createVpnInterface()
+
+            // 启动包处理器
+            packetHandler = PacketHandler(this)
+            packetHandler?.start(vpnInterface!!)
+
             isRunning = true
             Log.i(TAG, "VPN代理已启动 - 战区修改生效中")
         } catch (e: Exception) {
@@ -65,16 +66,49 @@ class VpnProxyService : VpnService(), NetBareListener {
         }
     }
 
+    /**
+     * 创建 VPN TUN 接口
+     *
+     * 将所有 IPv4 流量路由到 VPN 接口，
+     * PacketHandler 从 TUN 设备读取并处理数据包。
+     */
+    private fun createVpnInterface(): ParcelFileDescriptor {
+        val builder = Builder()
+            .setSession("WarZoneVPN")
+            .addAddress("10.0.0.2", 32)
+            .addRoute("0.0.0.0", 0)  // 拦截所有 IPv4 流量
+            .setMtu(1500)
+
+        // 排除本应用自身的流量（避免死循环）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                builder.addDisallowedApplication(packageName)
+            } catch (e: Exception) {
+                Log.w(TAG, "排除自身流量失败: ${e.message}")
+            }
+        }
+
+        return builder.establish()
+            ?: throw IllegalStateException("无法创建 VPN 接口")
+    }
+
     private fun stopVpn() {
+        isRunning = false
         try {
-            netBare?.stop()
-            isRunning = false
-            Log.i(TAG, "VPN代理已停止")
+            packetHandler?.stop()
+            packetHandler = null
         } catch (e: Exception) {
-            Log.e(TAG, "停止VPN失败", e)
+            Log.e(TAG, "停止包处理器失败", e)
+        }
+        try {
+            vpnInterface?.close()
+            vpnInterface = null
+        } catch (e: Exception) {
+            Log.e(TAG, "关闭VPN接口失败", e)
         }
         stopForeground(true)
         stopSelf()
+        Log.i(TAG, "VPN代理已停止")
     }
 
     private fun createNotification(): Notification {
@@ -103,14 +137,5 @@ class VpnProxyService : VpnService(), NetBareListener {
     override fun onDestroy() {
         stopVpn()
         super.onDestroy()
-    }
-
-    override fun onServiceStarted() {
-        Log.i(TAG, "NetBare VPN service started")
-    }
-
-    override fun onServiceStopped() {
-        isRunning = false
-        Log.i(TAG, "NetBare VPN service stopped")
     }
 }
