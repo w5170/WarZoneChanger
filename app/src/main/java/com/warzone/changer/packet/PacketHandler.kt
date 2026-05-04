@@ -59,15 +59,26 @@ class PacketHandler(
             try {
                 val n = tunInput.read(buf)
                 if (n >= 20) dispatch(buf.copyOf(n))
-            } catch (e: IOException) { if (running) Log.e(TAG, "read", e) }
+            } catch (e: IOException) {
+                if (running) Log.e(TAG, "read", e)
+                // 不退出循环，继续尝试
+                try { Thread.sleep(10) } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.e(TAG, "unexpected error in readLoop", e)
+                try { Thread.sleep(10) } catch (_: Exception) {}
+            }
         }
     }
 
     private fun dispatch(d: ByteArray) {
-        if ((d[0].toInt() shr 4) != 4) return
-        when (d[9].toInt() and 0xFF) {
-            17 -> handleDns(d)
-            6 -> handleTcp(d)
+        try {
+            if ((d[0].toInt() shr 4) != 4) return
+            when (d[9].toInt() and 0xFF) {
+                17 -> handleDns(d)
+                6 -> handleTcp(d)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "dispatch error", e)
         }
     }
 

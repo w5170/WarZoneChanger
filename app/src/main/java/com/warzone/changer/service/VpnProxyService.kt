@@ -34,12 +34,21 @@ class VpnProxyService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "STOP") { stopVpn(); return START_NOT_STICKY }
         if (isRunning) return START_STICKY
-        startForeground(NOTIFICATION_ID, createNotification("正在启动..."))
+        Log.i(TAG, "onStartCommand")
+        try {
+            startForeground(NOTIFICATION_ID, createNotification("正在启动..."))
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground failed", e)
+        }
         Thread {
             try { startVpn() }
-            catch (e: Exception) { Log.e(TAG, "VPN failed", e); sendStatus(false, e.message ?: "未知"); stopSelf() }
+            catch (e: Exception) {
+                Log.e(TAG, "VPN failed", e)
+                sendStatus(false, e.message ?: "未知错误")
+                // 不自动停止，让用户决定
+            }
         }.start()
-        return START_STICKY
+        return START_STICKY  // 系统杀掉后自动重启
     }
 
     private fun startVpn() {
