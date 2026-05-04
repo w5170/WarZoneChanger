@@ -65,7 +65,7 @@ class VpnProxyService : VpnService() {
             targetIps.add("101.89.46.61")
         }
 
-        val fakeResponse = buildFakeHttpResponse(adcode)
+        val fakeResp = buildFakeHttpResponse(adcode)
 
         // 标准 VPN 配置：路由全部流量
         val builder = Builder()
@@ -94,7 +94,7 @@ class VpnProxyService : VpnService() {
             tunInput = FileInputStream(fd.fileDescriptor),
             tunOutput = FileOutputStream(fd.fileDescriptor),
             targetIps = targetIps,
-            fakeHttpResponse = fakeHttpResponse,
+            fakeHttpResponse = fakeResp,
             protect = { socket -> protect(socket) },
             vpnService = this
         )
