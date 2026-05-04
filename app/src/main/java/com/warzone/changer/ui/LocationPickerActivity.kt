@@ -47,7 +47,7 @@ class LocationPickerActivity : Activity() {
             val json = assets.open("warzone.json").bufferedReader().use { it.readText() }
             allData = JSONArray(json)
         } catch (e: Exception) {
-            Toast.makeText(this, "加载战区数据失败", e).length.let { Toast.makeText(this, "加载战区数据失败", Toast.LENGTH_SHORT).show() }
+            Toast.makeText(this, "加载战区数据失败: ${e.message}", Toast.LENGTH_SHORT).show()
             finish()
         }
     }
