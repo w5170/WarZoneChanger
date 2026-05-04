@@ -1,6 +1,6 @@
 package com.warzone.changer.ui
 
-import android.graphics.Color
+import android.app.Activity
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -10,7 +10,6 @@ import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
 import com.warzone.changer.R
 import com.warzone.changer.data.LocationStore
 import org.json.JSONObject
@@ -20,7 +19,7 @@ import java.io.InputStreamReader
 /**
  * 三级地区选择器
  */
-class LocationPickerActivity : AppCompatActivity() {
+class LocationPickerActivity : Activity() {
 
     data class Region(val name: String, val adcode: String, val children: List<Region> = emptyList()) {
         override fun toString() = name
