@@ -23,13 +23,17 @@ jobs:
     - name: Setup Android SDK
       uses: android-actions/setup-android@v4
 
+    - name: Install Android SDK components
+      run: |
+        sdkmanager --install "build-tools;34.0.0" "platforms;android-34"
+
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
       with:
         gradle-version: '8.3'
 
     - name: Build Debug APK
-      run: chmod +x gradlew && ./gradlew assembleDebug
+      run: gradle assembleDebug
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
