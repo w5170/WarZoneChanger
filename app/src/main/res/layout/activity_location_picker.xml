@@ -5,47 +5,27 @@
     android:orientation="vertical"
     android:padding="16dp">
 
-    <EditText
-        android:id="@+id/et_search"
+    <TextView
+        android:id="@+id/tvBreadcrumb"
         android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:hint="搜索省份..."
-        android:inputType="text"
-        android:paddingHorizontal="12dp"
-        android:background="@android:drawable/edit_text" />
+        android:layout_height="wrap_content"
+        android:text="选择战区"
+        android:textSize="16sp"
+        android:padding="8dp"
+        android:background="#f0f0f0"
+        android:layout_marginBottom="8dp" />
 
-    <LinearLayout
+    <EditText
+        android:id="@+id/etSearch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="搜索地区..."
+        android:layout_marginBottom="8dp" />
+
+    <ListView
+        android:id="@+id/lvRegions"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:orientation="horizontal"
-        android:layout_marginTop="8dp">
+        android:layout_weight="1" />
 
-        <!-- 省 -->
-        <ListView
-            android:id="@+id/lv_provinces"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:divider="#E0E0E0"
-            android:dividerHeight="1px" />
-
-        <!-- 市 -->
-        <ListView
-            android:id="@+id/lv_cities"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:divider="#E0E0E0"
-            android:dividerHeight="1px" />
-
-        <!-- 区 -->
-        <ListView
-            android:id="@+id/lv_districts"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:divider="#E0E0E0"
-            android:dividerHeight="1px" />
-    </LinearLayout>
 </LinearLayout>

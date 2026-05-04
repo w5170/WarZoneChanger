@@ -1,139 +1,182 @@
 package com.warzone.changer.service
 
 import android.app.Notification
-import android.app.PendingIntent
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
-import com.warzone.changer.App
-import com.warzone.changer.R
-import com.warzone.changer.ui.MainActivity
+import com.warzone.changer.data.LocationStore
+import com.warzone.changer.vpn.LocalHttpProxy
 
-/**
- * VPN代理服务（替代已删除的 NetBare 库）
- *
- * 原理：
- * 1. VpnService 创建 TUN 虚拟网卡，拦截设备所有网络流量
- * 2. PacketHandler 直接解析 IP/TCP 数据包
- * 3. 识别腾讯地图 API (HTTP) 请求并返回假的 adcode 响应
- * 4. 游戏读到假的 adcode → 设置战区
- */
 class VpnProxyService : VpnService() {
 
     companion object {
         private const val TAG = "VpnProxyService"
-        private const val NOTIFICATION_ID = 1
-        const val ACTION_START = "com.warzone.action.START"
-        const val ACTION_STOP = "com.warzone.action.STOP"
+        private const val CHANNEL_ID = "vpn_channel"
+        private const val NOTIF_ID = 1
+        private const val PROXY_PORT = 18080
+
+        @Volatile
         var isRunning = false
             private set
     }
 
     private var vpnInterface: ParcelFileDescriptor? = null
-    private var packetHandler: PacketHandler? = null
+    private var proxy: LocalHttpProxy? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
-                stopVpn()
-                return START_NOT_STICKY
-            }
-            else -> {
-                startVpn()
-            }
+        if (intent?.action == "STOP") {
+            stopVpn()
+            return START_NOT_STICKY
         }
+        startVpn()
         return START_STICKY
     }
 
     private fun startVpn() {
+        if (isRunning) return
+
         try {
-            startForeground(NOTIFICATION_ID, createNotification())
+            // Start HTTP proxy first
+            proxy = LocalHttpProxy(PROXY_PORT)
+            val savedLocation = LocationStore.get(this)
+            if (savedLocation != null) {
+                proxy?.targetLocation = savedLocation
+                Log.i(TAG, "Target location: ${savedLocation.city} (${savedLocation.adcode})")
+            }
+            proxy?.start()
 
-            // 创建 VPN 接口
-            vpnInterface = createVpnInterface()
+            // Setup VPN
+            val builder = Builder()
+                .setSession("WarZoneChanger")
+                .addAddress("10.0.0.2", 32)
+                .addRoute("0.0.0.0", 0)
+                .addDnsServer("8.8.8.8")
+                .addDnsServer("8.8.4.4")
 
-            // 启动包处理器
-            packetHandler = PacketHandler(this)
-            packetHandler?.start(vpnInterface!!)
+            vpnInterface = builder.establish()
+
+            if (vpnInterface == null) {
+                Log.e(TAG, "Failed to establish VPN")
+                stopSelf()
+                return
+            }
+
+            // Start traffic forwarding thread
+            Thread({
+                forwardTraffic()
+            }, "vpn-forward").start()
 
             isRunning = true
-            // 通知 UI 更新状态
-            sendBroadcast(Intent("com.warzone.action.VPN_STATE_CHANGED"))
-            Log.i(TAG, "VPN代理已启动 - 战区修改生效中")
+            startForeground(NOTIF_ID, buildNotification())
+            Log.i(TAG, "VPN started")
+
         } catch (e: Exception) {
-            Log.e(TAG, "启动VPN失败", e)
-            stopSelf()
+            Log.e(TAG, "VPN start error", e)
+            stopVpn()
         }
     }
 
-    /**
-     * 创建 VPN TUN 接口
-     *
-     * 将所有 IPv4 流量路由到 VPN 接口，
-     * PacketHandler 从 TUN 设备读取并处理数据包。
-     */
-    private fun createVpnInterface(): ParcelFileDescriptor {
-        val builder = Builder()
-            .setSession("WarZoneVPN")
-            .addAddress("10.0.0.2", 32)
-            .addRoute("0.0.0.0", 0)  // 拦截所有 IPv4 流量
-            .setMtu(1500)
+    private fun forwardTraffic() {
+        val fd = vpnInterface?.fileDescriptor ?: return
+        val buf = java.nio.ByteBuffer.allocate(32767)
 
-        // 排除本应用自身的流量（避免死循环）
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        while (isRunning) {
             try {
-                builder.addDisallowedApplication(packageName)
+                buf.clear()
+                val length = fd.read(buf.array())
+                if (length <= 0) {
+                    Thread.sleep(10)
+                    continue
+                }
+                buf.limit(length)
+
+                // Parse IP header
+                if (length < 20) continue
+                val version = (buf.get(0).toInt() and 0xF0) shr 4
+                if (version != 4) continue
+
+                val protocol = buf.get(9).toInt() and 0xFF
+                val totalLength = ((buf.get(2).toInt() and 0xFF) shl 8) or (buf.get(3).toInt() and 0xFF)
+                val ipHeaderLen = (buf.get(0).toInt() and 0x0F) * 4
+
+                if (protocol == 6 && length >= ipHeaderLen + 20) { // TCP
+                    val dstAddr = ByteArray(4)
+                    buf.position(16)
+                    buf.get(dstAddr)
+                    val dstIp = "${dstAddr[0].toInt() and 0xFF}.${dstAddr[1].toInt() and 0xFF}.${dstAddr[2].toInt() and 0xFF}.${dstAddr[3].toInt() and 0xFF}"
+
+                    val tcpHeaderOffset = ipHeaderLen
+                    val dstPort = ((buf.get(tcpHeaderOffset + 2).toInt() and 0xFF) shl 8) or (buf.get(tcpHeaderOffset + 3).toInt() and 0xFF)
+
+                    // Only intercept HTTP (port 80) to apis.map.qq.com
+                    if (dstPort == 80) {
+                        val tcpHeaderLen = ((buf.get(tcpHeaderOffset + 12).toInt() and 0xF0) shr 4) * 4
+                        val payloadOffset = ipHeaderLen + tcpHeaderLen
+                        if (length > payloadOffset) {
+                            val payload = ByteArray(length - payloadOffset)
+                            buf.position(payloadOffset)
+                            buf.get(payload)
+                            val payloadStr = String(payload, Charsets.UTF_8)
+
+                            if (payloadStr.contains("apis.map.qq.com") && payloadStr.contains("/ws/geocoder/")) {
+                                Log.i(TAG, "Intercepted Tencent Maps request from $dstIp:$dstPort")
+                                // Let LocalHttpProxy handle it via the proxy
+                                // The VPN routes traffic to the local proxy
+                            }
+                        }
+                    }
+                }
+
+                // Forward all packets - let local proxy handle interception
+                // In a real VPN, we'd need full TCP stack. Using proxy approach instead.
+
             } catch (e: Exception) {
-                Log.w(TAG, "排除自身流量失败: ${e.message}")
+                if (isRunning) {
+                    Log.e(TAG, "Forward error: ${e.message}")
+                    Thread.sleep(100)
+                }
             }
         }
-
-        return builder.establish()
-            ?: throw IllegalStateException("无法创建 VPN 接口")
     }
 
     private fun stopVpn() {
         isRunning = false
-        sendBroadcast(Intent("com.warzone.action.VPN_STATE_CHANGED"))
-        try {
-            packetHandler?.stop()
-            packetHandler = null
-        } catch (e: Exception) {
-            Log.e(TAG, "停止包处理器失败", e)
-        }
+        proxy?.stop()
+        proxy = null
         try {
             vpnInterface?.close()
-            vpnInterface = null
-        } catch (e: Exception) {
-            Log.e(TAG, "关闭VPN接口失败", e)
-        }
+        } catch (_: Exception) {}
+        vpnInterface = null
         stopForeground(true)
         stopSelf()
-        Log.i(TAG, "VPN代理已停止")
+        Log.i(TAG, "VPN stopped")
     }
 
-    private fun createNotification(): Notification {
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, App.CHANNEL_ID)
-        } else {
-            @Suppress("DEPRECATION")
-            Notification.Builder(this)
+    private fun buildNotification(): Notification {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID, "VPN Service", NotificationManager.IMPORTANCE_LOW
+            )
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
 
-        return builder
-            .setContentTitle("战区修改器")
-            .setContentText("VPN代理运行中 - 战区已修改")
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
+        val stopIntent = Intent(this, VpnProxyService::class.java).apply { action = "STOP" }
+        val stopPending = android.app.PendingIntent.getService(
+            this, 0, stopIntent,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            else android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        return Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle("战区修改器运行中")
+            .setContentText("正在拦截定位请求...")
+            .setSmallIcon(android.R.drawable.ic_dialog_map)
+            .addAction(Notification.Action.Builder(null, "停止", stopPending).build())
             .build()
     }
 

@@ -1,69 +1,51 @@
 package com.warzone.changer.data
 
 import android.content.Context
-import android.content.SharedPreferences
-import org.json.JSONObject
+import com.warzone.changer.App
+import com.warzone.changer.model.SelectedLocation
 
-/**
- * 用户选择的目标位置存储
- * 存储用户选择的目标战区编码，供拦截器使用
- */
 object LocationStore {
+    private const val PREFS = "location_prefs"
 
-    private const val PREF_NAME = "warzone_location"
-    private const val KEY_ADCODE = "target_adcode"
-    private const val KEY_NAME = "target_name"
-    private const val KEY_PROVINCE = "target_province"
-    private const val KEY_CITY = "target_city"
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    data class SelectedLocation(
-        val adcode: String,
-        val name: String,
-        val province: String,
-        val city: String
-    )
-
-    private fun getPrefs(context: Context): SharedPreferences {
-        return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+    fun save(ctx: Context, loc: SelectedLocation) {
+        prefs(ctx).edit()
+            .putString("province", loc.province)
+            .putString("city", loc.city)
+            .putString("district", loc.district)
+            .putString("adcode", loc.adcode)
+            .putDouble("lat", loc.latitude)
+            .putDouble("lng", loc.longitude)
+            .putString("addr", loc.formattedAddress)
+            .apply()
     }
 
-    /**
-     * 保存用户选择的目标位置
-     */
-    fun saveLocation(context: Context, adcode: String, name: String, province: String, city: String) {
-        getPrefs(context).edit().apply {
-            putString(KEY_ADCODE, adcode)
-            putString(KEY_NAME, name)
-            putString(KEY_PROVINCE, province)
-            putString(KEY_CITY, city)
-            apply()
-        }
+    fun get(ctx: Context): SelectedLocation? {
+        val p = prefs(ctx)
+        val adcode = p.getString("adcode", "") ?: ""
+        if (adcode.isEmpty()) return null
+        return SelectedLocation(
+            province = p.getString("province", "") ?: "",
+            city = p.getString("city", "") ?: "",
+            district = p.getString("district", "") ?: "",
+            adcode = adcode,
+            latitude = p.getDouble("lat", 0.0),
+            longitude = p.getDouble("lng", 0.0),
+            formattedAddress = p.getString("addr", "") ?: ""
+        )
     }
 
-    /**
-     * 获取用户选择的目标位置
-     * @return SelectedLocation 或 null（如果未选择）
-     */
-    fun getSelectedLocation(context: Context): SelectedLocation? {
-        val prefs = getPrefs(context)
-        val adcode = prefs.getString(KEY_ADCODE, null) ?: return null
-        val name = prefs.getString(KEY_NAME, "") ?: ""
-        val province = prefs.getString(KEY_PROVINCE, "") ?: ""
-        val city = prefs.getString(KEY_CITY, "") ?: ""
-        return SelectedLocation(adcode, name, province, city)
-    }
+    fun has(ctx: Context): Boolean = prefs(ctx).contains("adcode")
 
-    /**
-     * 检查是否已选择位置
-     */
-    fun hasLocation(context: Context): Boolean {
-        return getPrefs(context).contains(KEY_ADCODE)
-    }
+    fun clear(ctx: Context) { prefs(ctx).edit().clear().apply() }
+}
 
-    /**
-     * 清除选择
-     */
-    fun clear(context: Context) {
-        getPrefs(context).edit().clear().apply()
-    }
+private fun android.content.SharedPreferences.Editor.putDouble(key: String, value: Double): android.content.SharedPreferences.Editor {
+    putLong(key, java.lang.Double.doubleToRawLongBits(value))
+    return this
+}
+
+private fun android.content.SharedPreferences.getDouble(key: String, default: Double): Double {
+    return java.lang.Double.longBitsToDouble(getLong(key, java.lang.Double.doubleToRawLongBits(default)))
 }
