@@ -12,7 +12,7 @@ import android.widget.TextView
 import android.widget.Toast
 import com.warzone.changer.R
 import com.warzone.changer.data.LocationStore
-import org.json.JSONObject
+import org.json.JSONArray
 import java.io.BufferedReader
 import java.io.InputStreamReader
 
@@ -108,24 +108,27 @@ class LocationPickerActivity : Activity() {
     private fun loadWarzoneData(): List<Region> {
         val stream = assets.open("warzone.json")
         val text = BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
-        val root = JSONObject(text)
+        val arr = JSONArray(text)
         val result = mutableListOf<Region>()
-        for (provinceName in root.keys()) {
-            val provinceObj = root.getJSONObject(provinceName)
-            val provinceCode = provinceObj.optString("adcode", "")
+        for (i in 0 until arr.length()) {
+            val prov = arr.getJSONObject(i)
+            val provName = prov.getString("province")
+            val provCode = prov.getString("adcode")
             val cities = mutableListOf<Region>()
-            for (cityName in provinceObj.keys()) {
-                if (cityName == "adcode") continue
-                val cityObj = provinceObj.getJSONObject(cityName)
-                val cityCode = cityObj.optString("adcode", "")
+            val cityArr = prov.getJSONArray("cities")
+            for (j in 0 until cityArr.length()) {
+                val city = cityArr.getJSONObject(j)
+                val cityName = city.getString("city")
+                val cityCode = city.getString("adcode")
                 val districts = mutableListOf<Region>()
-                for (districtName in cityObj.keys()) {
-                    if (districtName == "adcode") continue
-                    districts.add(Region(districtName, cityObj.optString(districtName, districtName)))
+                val distArr = city.getJSONArray("districts")
+                for (k in 0 until distArr.length()) {
+                    val dist = distArr.getJSONObject(k)
+                    districts.add(Region(dist.getString("name"), dist.getString("adcode")))
                 }
                 cities.add(Region(cityName, cityCode, districts))
             }
-            result.add(Region(provinceName, provinceCode, cities))
+            result.add(Region(provName, provCode, cities))
         }
         return result
     }
