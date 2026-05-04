@@ -35,6 +35,13 @@ object LocationStore {
         )
     }
 
+    fun saveSelectedLocation(context: Context, name: String, adcode: String, path: List<String>) {
+        val province = path.getOrElse(0) { "" }
+        val city = path.getOrElse(1) { "" }
+        val district = path.getOrElse(2) { "" }
+        saveLocation(context, SelectedLocation(province, city, district, adcode))
+    }
+
     fun clearLocation(context: Context) {
         context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             .edit()

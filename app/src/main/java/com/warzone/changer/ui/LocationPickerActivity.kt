@@ -1,152 +1,133 @@
 package com.warzone.changer.ui
 
-import android.app.Activity
+import android.graphics.Color
 import android.os.Bundle
-import android.widget.*
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.ArrayAdapter
+import android.widget.ListView
+import android.widget.ProgressBar
+import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
 import com.warzone.changer.R
 import com.warzone.changer.data.LocationStore
-import com.warzone.changer.model.SelectedLocation
-import org.json.JSONArray
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
 
 /**
- * 省→市→区 三级战区选择器
+ * 三级地区选择器
  */
-class LocationPickerActivity : Activity() {
+class LocationPickerActivity : AppCompatActivity() {
 
+    data class Region(val name: String, val adcode: String, val children: List<Region> = emptyList()) {
+        override fun toString() = name
+    }
+
+    private lateinit var tvTitle: TextView
+    private lateinit var tvCurrent: TextView
     private lateinit var listView: ListView
-    private lateinit var tvBreadcrumb: TextView
-    private lateinit var btnBack: Button
-
-    private var allData: JSONArray? = null
-    private var currentLevel = 0 // 0=省, 1=市, 2=区
-
-    private var selectedProvince: String = ""
-    private var selectedProvinceAdcode: String = ""
-    private var selectedCity: String = ""
-    private var selectedCityAdcode: String = ""
+    private lateinit var progress: ProgressBar
+    private var allData: List<Region> = emptyList()
+    private var stack = mutableListOf<List<Region>>()
+    private var selectedPath = mutableListOf<String>()
+    private var selectedAdcode = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_location_picker)
+        tvTitle = findViewById(R.id.tvTitle)
+        tvCurrent = findViewById(R.id.tvCurrent)
+        listView = findViewById(R.id.listLocations)
+        progress = findViewById(R.id.progressLoad)
 
-        listView = findViewById(R.id.list_locations)
-        tvBreadcrumb = findViewById(R.id.tv_breadcrumb)
-        btnBack = findViewById(R.id.btn_back)
+        findViewById<View>(R.id.btnBack).setOnClickListener { onBackPressed() }
 
-        btnBack.setOnClickListener { handleBack() }
-
-        // 加载战区数据
-        loadWarzoneData()
-
-        // 显示省份列表
-        showProvinces()
-    }
-
-    private fun loadWarzoneData() {
-        try {
-            val json = assets.open("warzone.json").bufferedReader().use { it.readText() }
-            allData = JSONArray(json)
-        } catch (e: Exception) {
-            Toast.makeText(this, "加载战区数据失败: ${e.message}", Toast.LENGTH_SHORT).show()
-            finish()
-        }
-    }
-
-    private fun showProvinces() {
-        currentLevel = 0
-        tvBreadcrumb.text = "选择省份"
-
-        val data = allData ?: return
-        val names = mutableListOf<String>()
-        for (i in 0 until data.length()) {
-            names.add(data.getJSONObject(i).getString("province"))
-        }
-
-        listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, names)
-        listView.setOnItemClickListener { _, _, position, _ ->
-            val obj = data.getJSONObject(position)
-            selectedProvince = obj.getString("province")
-            selectedProvinceAdcode = obj.getString("adcode")
-            showCities(obj)
-        }
-    }
-
-    private fun showCities(provinceObj: org.json.JSONObject) {
-        currentLevel = 1
-        tvBreadcrumb.text = "$selectedProvince > 选择城市"
-
-        val cities = provinceObj.getJSONArray("cities")
-        val names = mutableListOf<String>()
-        for (i in 0 until cities.length()) {
-            names.add(cities.getJSONObject(i).getString("city"))
-        }
-
-        listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, names)
-        listView.setOnItemClickListener { _, _, position, _ ->
-            val cityObj = cities.getJSONObject(position)
-            selectedCity = cityObj.getString("city")
-            selectedCityAdcode = cityObj.getString("adcode")
-
-            val districts = cityObj.optJSONArray("districts")
-            if (districts != null && districts.length() > 0) {
-                showDistricts(cityObj)
-            } else {
-                // 没有区级数据，直接使用市级
-                saveAndFinish(selectedCity, selectedCityAdcode)
-            }
-        }
-    }
-
-    private fun showDistricts(cityObj: org.json.JSONObject) {
-        currentLevel = 2
-        tvBreadcrumb.text = "$selectedProvince > $selectedCity > 选择区"
-
-        val districts = cityObj.getJSONArray("districts")
-        val names = mutableListOf<String>()
-        for (i in 0 until districts.length()) {
-            names.add(districts.getJSONObject(i).getString("name"))
-        }
-
-        listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, names)
-        listView.setOnItemClickListener { _, _, position, _ ->
-            val dist = districts.getJSONObject(position)
-            saveAndFinish(dist.getString("name"), dist.getString("adcode"))
-        }
-    }
-
-    private fun saveAndFinish(district: String, adcode: String) {
-        val location = SelectedLocation(
-            province = selectedProvince,
-            city = selectedCity,
-            district = district,
-            adcode = adcode
-        )
-        LocationStore.saveLocation(this, location)
-        Toast.makeText(this, "已选择: ${location.displayName}", Toast.LENGTH_SHORT).show()
-        setResult(RESULT_OK)
-        finish()
-    }
-
-    private fun handleBack() {
-        when (currentLevel) {
-            0 -> finish()
-            1 -> showProvinces()
-            2 -> {
-                val data = allData ?: return
-                for (i in 0 until data.length()) {
-                    val obj = data.getJSONObject(i)
-                    if (obj.getString("province") == selectedProvince) {
-                        showCities(obj)
-                        return
-                    }
+        progress.visibility = View.VISIBLE
+        Thread {
+            try {
+                val data = loadWarzoneData()
+                runOnUiThread {
+                    allData = data
+                    showList(data, "请选择省份")
+                    progress.visibility = View.GONE
                 }
-                showProvinces()
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this, "加载战区数据失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                    progress.visibility = View.GONE
+                }
+            }
+        }.start()
+    }
+
+    private fun showList(items: List<Region>, hint: String) {
+        val adapter = object : ArrayAdapter<Region>(this, R.layout.item_list, R.id.tv_name, items) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val view = convertView ?: LayoutInflater.from(context).inflate(R.layout.item_list, parent, false)
+                view.findViewById<TextView>(R.id.tv_name).text = items[position].name
+                return view
+            }
+        }
+        listView.adapter = adapter
+        tvTitle.text = hint
+        tvCurrent.text = if (selectedPath.isEmpty()) "当前: 未选择" else "当前: ${selectedPath.joinToString(" → ")}"
+        listView.setOnItemClickListener { _, _, position, _ ->
+            val item = items[position]
+            if (item.children.isNotEmpty()) {
+                stack.add(items)
+                selectedPath.add(item.name)
+                val hint = when (stack.size) {
+                    1 -> "请选择城市"
+                    2 -> "请选择区县"
+                    else -> "请选择"
+                }
+                showList(item.children, hint)
+            } else {
+                selectedAdcode = item.adcode
+                selectedPath.add(item.name)
+                LocationStore.saveSelectedLocation(this, item.name, selectedAdcode, selectedPath.toList())
+                Toast.makeText(this, "已选择: ${selectedPath.joinToString(" → ")}", Toast.LENGTH_LONG).show()
+                setResult(RESULT_OK)
+                finish()
             }
         }
     }
 
-    @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        handleBack()
+        if (stack.isNotEmpty()) {
+            val prev = stack.removeAt(stack.size - 1)
+            selectedPath.removeAt(selectedPath.size - 1)
+            showList(prev, if (stack.isEmpty()) "请选择省份" else if (stack.size == 1) "请选择城市" else "请选择区县")
+        } else {
+            super.onBackPressed()
+        }
+    }
+
+    private fun loadWarzoneData(): List<Region> {
+        val stream = assets.open("warzone.json")
+        val text = BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
+        val root = JSONObject(text)
+        val result = mutableListOf<Region>()
+        for (provinceName in root.keys()) {
+            val provinceObj = root.getJSONObject(provinceName)
+            val provinceCode = provinceObj.optString("adcode", "")
+            val cities = mutableListOf<Region>()
+            for (cityName in provinceObj.keys()) {
+                if (cityName == "adcode") continue
+                val cityObj = provinceObj.getJSONObject(cityName)
+                val cityCode = cityObj.optString("adcode", "")
+                val districts = mutableListOf<Region>()
+                for (districtName in cityObj.keys()) {
+                    if (districtName == "adcode") continue
+                    districts.add(Region(districtName, cityObj.optString(districtName, districtName)))
+                }
+                cities.add(Region(cityName, cityCode, districts))
+            }
+            result.add(Region(provinceName, provinceCode, cities))
+        }
+        return result
     }
 }

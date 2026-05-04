@@ -5,20 +5,13 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
 /**
- * 核心包处理器 — 只处理目标流量
+ * 简化版包处理器 — 只处理目标流量
  *
- * 架构：VPN 只路由 apis.map.qq.com 的 IP，其他流量不经过 VPN
- * → 本类只需处理目标 IP:80 的 TCP 包
- * → SYN → SYN-ACK
- * → HTTP 请求 → 返回假响应（改 adcode）
- * → FIN → FIN-ACK
- * → 其他端口 → RST
- *
- * 不做任何转发，不会影响游戏其他网络连接
+ * 因为 VPN 只路由 apis.map.qq.com 的 IP，所以到达这里的包
+ * 全部都是目标流量，直接拦截返回假响应即可。
+ * 不需要转发逻辑！
  */
 class PacketHandler(
     private val tunInput: FileInputStream,
@@ -28,458 +21,187 @@ class PacketHandler(
 ) {
     companion object {
         private const val TAG = "PacketHandler"
-        private const val TARGET_PORT = 80
         private const val BUF_SIZE = 65535
-        private const val SESSION_TIMEOUT_MS = 30_000L
     }
 
-    @Volatile
-    private var running = false
-    private val executor = Executors.newCachedThreadPool()
+    @Volatile private var running = false
     private val sessions = ConcurrentHashMap<String, Session>()
 
-    private class Session(
-        val key: String,
-        val srcIp: String, val srcPort: Int,
-        val dstIp: String, val dstPort: Int,
-        var clientSeq: Long,
-        var serverSeq: Long,
-        var state: State = State.SYN_RECEIVED,
-        var lastActivity: Long = System.currentTimeMillis()
-    ) {
-        enum class State { SYN_RECEIVED, ESTABLISHED, CLOSED }
-    }
-
-    // ===== 启动/停止 =====
+    data class Session(
+        var clientSeq: Long = 0,
+        var serverSeq: Long = 100000L,
+        var state: Int = 0 // 0=syn_rcvd, 1=established, 2=closed
+    )
 
     fun start() {
         running = true
-        executor.submit { readLoop() }
-        executor.submit { cleanupLoop() }
-        Log.i(TAG, "PacketHandler started. Target IPs: $targetIps")
+        Thread({ readLoop() }, "tun-reader").start()
+        Log.i(TAG, "Started, target IPs: $targetIps")
     }
 
     fun stop() {
         running = false
         sessions.clear()
-        executor.shutdownNow()
-        try { executor.awaitTermination(2, TimeUnit.SECONDS) } catch (_: Exception) {}
-        Log.i(TAG, "PacketHandler stopped")
+        Log.i(TAG, "Stopped")
     }
-
-    // ===== 主循环 =====
 
     private fun readLoop() {
         val buf = ByteArray(BUF_SIZE)
         while (running) {
             try {
                 val len = tunInput.read(buf)
-                if (len > 0) processPacket(buf.copyOf(len))
+                if (len > 0) processPacket(buf, len)
             } catch (e: IOException) {
-                if (running) Log.e(TAG, "TUN read error", e)
+                if (running) Log.e(TAG, "Read error", e)
             }
         }
     }
 
-    private fun cleanupLoop() {
-        while (running) {
-            try {
-                Thread.sleep(5000)
-                val now = System.currentTimeMillis()
-                val expired = sessions.entries.filter { now - it.value.lastActivity > SESSION_TIMEOUT_MS }
-                expired.forEach { (k, _) ->
-                    sessions.remove(k)
-                    Log.d(TAG, "Session expired: $k")
-                }
-            } catch (_: InterruptedException) { break }
-            catch (e: Exception) { Log.e(TAG, "Cleanup error", e) }
-        }
-    }
+    private fun processPacket(data: ByteArray, len: Int) {
+        if (len < 40) return // min IP(20) + TCP(20)
+        val ver = (data[0].toInt() shr 4) and 0xF
+        if (ver != 4) return
+        val proto = data[9].toInt() and 0xFF
+        if (proto != 6) return // 只处理 TCP
 
-    // ===== 包处理 =====
+        val ipHdrLen = (data[0].toInt() and 0xF) * 4
+        if (len < ipHdrLen + 20) return
 
-    private fun processPacket(data: ByteArray) {
-        if (data.size < 20) return
-
-        val version = (data[0].toInt() shr 4) and 0x0F
-        if (version != 4) return
-
-        val ipHdrLen = (data[0].toInt() and 0x0F) * 4
-        val protocol = data[9].toInt() and 0x0F
-        val srcIp = readIp(data, 12)
-        val dstIp = readIp(data, 16)
-
-        // 只处理发往目标 IP 的包
-        if (dstIp !in targetIps && srcIp !in targetIps) return
-
-        when (protocol) {
-            6 -> handleTcp(data, ipHdrLen, srcIp, dstIp)
-            17 -> handleUdp(data, ipHdrLen, srcIp, dstIp)
-            1 -> handleIcmp(data, ipHdrLen, srcIp, dstIp)
-        }
-    }
-
-    // ===== TCP 处理 =====
-
-    private fun handleTcp(data: ByteArray, ipHdrLen: Int, srcIp: String, dstIp: String) {
-        if (data.size < ipHdrLen + 20) return
-
-        val tcpOff = ipHdrLen
-        val srcPort = readU16(data, tcpOff)
-        val dstPort = readU16(data, tcpOff + 2)
-        val seq = readU32(data, tcpOff + 4)
-        val ack = readU32(data, tcpOff + 8)
-        val dataOff = ((data[tcpOff + 12].toInt() and 0xF0) shr 4) * 4
-        val flags = data[tcpOff + 13].toInt() and 0x3F
-        val window = readU16(data, tcpOff + 14)
+        val srcIp = ip(data, 12); val dstIp = ip(data, 16)
+        val tcp = data.copyOfRange(ipHdrLen, len)
+        val srcPort = u16(tcp, 0); val dstPort = u16(tcp, 2)
+        val seq = u32(tcp, 4); val ack = u32(tcp, 8)
+        val tcpHdrLen = ((tcp[12].toInt() and 0xF0) shr 4) * 4
+        val flags = tcp[13].toInt() and 0x3F
+        val payload = if (tcpHdrLen < tcp.size) tcp.copyOfRange(tcpHdrLen, tcp.size) else ByteArray(0)
 
         val isSyn = (flags and 0x02) != 0
         val isAck = (flags and 0x10) != 0
         val isFin = (flags and 0x01) != 0
         val isRst = (flags and 0x04) != 0
-        val isPsh = (flags and 0x08) != 0
 
-        val payloadStart = ipHdrLen + dataOff
-        val payload = if (payloadStart < data.size) data.copyOfRange(payloadStart, data.size) else ByteArray(0)
+        val key = "$srcIp:$srcPort"
+        var sess = sessions[key]
 
-        val key = "$srcIp:$srcPort->$dstIp:$dstPort"
+        if (isRst) { sessions.remove(key); return }
 
-        // 非目标端口 → RST
-        if (dstPort != TARGET_PORT && dstIp in targetIps) {
-            if (isSyn && !isAck) sendRst(dstIp, dstPort, srcIp, srcPort, 0, seq + 1)
+        if (isSyn && !isAck) {
+            // 三次握手第一步：收到 SYN → 发 SYN-ACK
+            val s = Session(clientSeq = seq)
+            sessions[key] = s
+            writeTcp(dstIp, dstPort, srcIp, srcPort, s.serverSeq, seq + 1, 0x12, ByteArray(0))
+            s.serverSeq++
+            Log.d(TAG, "SYN from $key")
             return
         }
-        // 从目标 IP 发来的包（响应方向）→ 可能是上一个会话的迟到包，忽略
-        if (srcIp in targetIps && dstIp !in targetIps) return
 
-        when {
-            isRst -> {
-                sessions.remove(key)
-            }
-            isSyn && !isAck -> {
-                handleSyn(key, srcIp, srcPort, dstIp, dstPort, seq)
-            }
-            isAck && sessions.containsKey(key) -> {
-                val session = sessions[key]!!
-                session.lastActivity = System.currentTimeMillis()
-                session.clientSeq = seq
+        if (sess == null) { return }
 
-                if (payload.isNotEmpty() && session.state == Session.State.ESTABLISHED) {
-                    val http = String(payload, Charsets.US_ASCII)
-                    if (http.startsWith("GET ") || http.startsWith("POST ") ||
-                        http.startsWith("HEAD ") || http.startsWith("PUT ") ||
-                        http.startsWith("OPTIONS ")) {
-                        Log.d(TAG, "Intercepted HTTP: ${http.take(80)}")
-                        session.clientSeq = seq + payload.size
-                        sendAck(session)
-                        sendFakeResponse(session)
-                    }
-                }
+        if (isAck && sess.state == 0) {
+            // 三次握手第三步：ACK → 连接建立
+            sess.state = 1
+            Log.d(TAG, "Established: $key")
+        }
 
-                if (isFin) {
-                    session.clientSeq = seq + 1
-                    sendFinAck(session)
-                    sessions.remove(key)
-                }
+        if (payload.isNotEmpty() && sess.state == 1) {
+            // 有数据 → 检查是否是 HTTP 请求
+            val http = String(payload, Charsets.US_ASCII)
+            if (http.startsWith("GET ") || http.startsWith("POST ") ||
+                http.startsWith("HEAD ") || http.startsWith("PUT ")) {
+                Log.d(TAG, "HTTP intercepted from $key")
+
+                // ACK 收到的数据
+                sess.clientSeq = seq + payload.size
+                writeTcp(dstIp, dstPort, srcIp, srcPort, sess.serverSeq, sess.clientSeq, 0x10, ByteArray(0))
+
+                // PSH+ACK 发送假响应
+                writeTcp(dstIp, dstPort, srcIp, srcPort, sess.serverSeq, sess.clientSeq, 0x18, fakeHttpResponse)
+                sess.serverSeq += fakeHttpResponse.size
+
+                // FIN+ACK 关闭
+                Thread.sleep(20)
+                writeTcp(dstIp, dstPort, srcIp, srcPort, sess.serverSeq, sess.clientSeq, 0x11, ByteArray(0))
+                sess.state = 2
+                Log.d(TAG, "Fake response sent, closing: $key")
+            } else {
+                // 非 HTTP 数据，ACK 它
+                sess.clientSeq = seq + payload.size
+                writeTcp(dstIp, dstPort, srcIp, srcPort, sess.serverSeq, sess.clientSeq, 0x10, ByteArray(0))
             }
-            else -> {
-                // 未知状态，RST
-                if (isSyn || isAck) {
-                    sendRst(dstIp, dstPort, srcIp, srcPort, 0, seq + if (payload.isNotEmpty()) payload.size else 1)
-                }
-            }
+        }
+
+        if (isAck && payload.isEmpty()) {
+            sess.clientSeq = seq
+        }
+
+        if (isFin) {
+            sess.clientSeq = seq + 1
+            writeTcp(dstIp, dstPort, srcIp, srcPort, sess.serverSeq, sess.clientSeq, 0x11, ByteArray(0))
+            sessions.remove(key)
+            Log.d(TAG, "FIN: $key")
         }
     }
 
-    private fun handleSyn(key: String, srcIp: String, srcPort: Int, dstIp: String, dstPort: Int, clientSeq: Long) {
-        val serverSeq = 100000L + (Math.random() * 900000).toLong()
-        val session = Session(
-            key = key,
-            srcIp = srcIp, srcPort = srcPort,
-            dstIp = dstIp, dstPort = dstPort,
-            clientSeq = clientSeq,
-            serverSeq = serverSeq
-        )
-        sessions[key] = session
-
-        // SYN-ACK
-        val pkt = buildTcpPacket(
-            srcIp = dstIp, srcPort = dstPort,
-            dstIp = srcIp, dstPort = srcPort,
-            seq = serverSeq, ack = clientSeq + 1,
-            flags = 0x12, payload = ByteArray(0)
-        )
-        writeTun(pkt)
-        session.serverSeq = serverSeq + 1
-        Log.d(TAG, "SYN-ACK sent: $key")
-    }
-
-    private fun sendAck(session: Session) {
-        val pkt = buildTcpPacket(
-            srcIp = session.dstIp, srcPort = session.dstPort,
-            dstIp = session.srcIp, dstPort = session.srcPort,
-            seq = session.serverSeq, ack = session.clientSeq,
-            flags = 0x10, payload = ByteArray(0)
-        )
-        writeTun(pkt)
-    }
-
-    private fun sendFakeResponse(session: Session) {
-        // PSH+ACK + 假数据
-        val pkt = buildTcpPacket(
-            srcIp = session.dstIp, srcPort = session.dstPort,
-            dstIp = session.srcIp, dstPort = session.srcPort,
-            seq = session.serverSeq, ack = session.clientSeq,
-            flags = 0x18, payload = fakeHttpResponse
-        )
-        writeTun(pkt)
-        session.serverSeq += fakeHttpResponse.size
-
-        // 稍后发 FIN+ACK 关闭
-        Thread.sleep(30)
-        val fin = buildTcpPacket(
-            srcIp = session.dstIp, srcPort = session.dstPort,
-            dstIp = session.srcIp, dstPort = session.srcPort,
-            seq = session.serverSeq, ack = session.clientSeq,
-            flags = 0x11, payload = ByteArray(0)
-        )
-        writeTun(fin)
-        session.state = Session.State.CLOSED
-        sessions.remove(session.key)
-        Log.d(TAG, "Fake response sent, connection closed")
-    }
-
-    private fun sendFinAck(session: Session) {
-        val pkt = buildTcpPacket(
-            srcIp = session.dstIp, srcPort = session.dstPort,
-            dstIp = session.srcIp, dstPort = session.srcPort,
-            seq = session.serverSeq, ack = session.clientSeq,
-            flags = 0x11, payload = ByteArray(0)
-        )
-        writeTun(pkt)
-    }
-
-    private fun sendRst(srcIp: String, srcPort: Int, dstIp: String, dstPort: Int, seq: Long, ack: Long) {
-        val pkt = buildTcpPacket(
-            srcIp = srcIp, srcPort = srcPort,
-            dstIp = dstIp, dstPort = dstPort,
-            seq = seq, ack = ack,
-            flags = 0x14, payload = ByteArray(0)
-        )
-        writeTun(pkt)
-    }
-
-    // ===== UDP/DNS 处理 =====
-
-    private fun handleUdp(data: ByteArray, ipHdrLen: Int, srcIp: String, dstIp: String) {
-        if (data.size < ipHdrLen + 8) return
-        val srcPort = readU16(data, ipHdrLen)
-        val dstPort = readU16(data, ipHdrLen + 2)
-        val payload = data.copyOfRange(ipHdrLen + 8, data.size)
-
-        // DNS 查询转发
-        if (dstPort == 53) {
-            executor.submit {
-                try {
-                    val sock = java.net.DatagramSocket()
-                    sock.soTimeout = 5000
-                    sock.send(java.net.DatagramPacket(payload, payload.size,
-                        java.net.InetSocketAddress("8.8.8.8", 53)))
-                    val buf = ByteArray(1024)
-                    val recv = java.net.DatagramPacket(buf, buf.size)
-                    sock.receive(recv)
-                    sock.close()
-
-                    val resp = buildUdpPacket(srcIp = dstIp, srcPort = 53,
-                        dstIp = srcIp, dstPort = srcPort,
-                        payload = buf.copyOf(recv.length))
-                    writeTun(resp)
-                } catch (e: Exception) {
-                    Log.w(TAG, "DNS forward error", e)
-                }
-            }
-        }
-    }
-
-    // ===== ICMP 处理 =====
-
-    private fun handleIcmp(data: ByteArray, ipHdrLen: Int, srcIp: String, dstIp: String) {
-        if (data.size < ipHdrLen + 8) return
-        val icmpType = data[ipHdrLen].toInt() and 0xFF
-        if (icmpType == 8) {
-            // Echo Reply
-            val reply = data.copyOf()
-            System.arraycopy(data, 12, reply, 16, 4)
-            System.arraycopy(data, 16, reply, 12, 4)
-            reply[8] = 64
-            reply[ipHdrLen] = 0
-            reply[ipHdrLen + 2] = 0; reply[ipHdrLen + 3] = 0
-            val csum = checksum(reply, ipHdrLen, reply.size - ipHdrLen)
-            reply[ipHdrLen + 2] = ((csum shr 8) and 0xFF).toByte()
-            reply[ipHdrLen + 3] = (csum and 0xFF).toByte()
-            fixIpChecksum(reply)
-            writeTun(reply)
-        }
-    }
-
-    // ===== 构建 TCP 包 =====
-
-    private fun buildTcpPacket(
-        srcIp: String, srcPort: Int,
-        dstIp: String, dstPort: Int,
-        seq: Long, ack: Long,
-        flags: Int, payload: ByteArray
-    ): ByteArray {
-        val ipLen = 20
-        val tcpLen = 20
-        val total = ipLen + tcpLen + payload.size
+    // ========== 构建 TCP 包写入 TUN ==========
+    private fun writeTcp(srcIp: String, srcPort: Int, dstIp: String, dstPort: Int,
+                         seqNum: Long, ackNum: Long, flags: Int, payload: ByteArray) {
+        val ipH = 20; val tcpH = 20
+        val total = ipH + tcpH + payload.size
         val pkt = ByteArray(total)
 
         // IP
         pkt[0] = 0x45.toByte()
-        pkt[2] = ((total shr 8) and 0xFF).toByte()
-        pkt[3] = (total and 0xFF).toByte()
+        w16(pkt, 2, total)
         pkt[6] = 0x40.toByte() // DF
         pkt[8] = 64
-        pkt[9] = 6
-        writeIp(pkt, 12, srcIp)
-        writeIp(pkt, 16, dstIp)
+        pkt[9] = 6 // TCP
+        wIp(pkt, 12, srcIp); wIp(pkt, 16, dstIp)
+        ipCsum(pkt)
 
         // TCP
-        val t = ipLen
-        pkt[t] = ((srcPort shr 8) and 0xFF).toByte()
-        pkt[t + 1] = (srcPort and 0xFF).toByte()
-        pkt[t + 2] = ((dstPort shr 8) and 0xFF).toByte()
-        pkt[t + 3] = (dstPort and 0xFF).toByte()
-        writeU32(pkt, t + 4, seq)
-        writeU32(pkt, t + 8, ack)
-        pkt[t + 12] = 0x50.toByte() // data offset 5
+        val t = ipH
+        w16(pkt, t, srcPort); w16(pkt, t + 2, dstPort)
+        w32(pkt, t + 4, seqNum); w32(pkt, t + 8, ackNum)
+        pkt[t + 12] = 0x50.toByte() // data offset=5
         pkt[t + 13] = (flags and 0x3F).toByte()
-        pkt[t + 14] = 0xFF.toByte(); pkt[t + 15] = 0xFF.toByte()
+        pkt[t + 14] = 0xFF.toByte(); pkt[t + 15] = 0xFF.toByte() // window
+        if (payload.isNotEmpty()) System.arraycopy(payload, 0, pkt, t + tcpH, payload.size)
+        tcpCsum(pkt, t, srcIp, dstIp)
 
-        if (payload.isNotEmpty()) {
-            System.arraycopy(payload, 0, pkt, ipLen + tcpLen, payload.size)
-        }
-
-        // TCP checksum
-        val tcpCsum = tcpChecksum(pkt, ipLen, srcIp, dstIp)
-        pkt[t + 16] = ((tcpCsum shr 8) and 0xFF).toByte()
-        pkt[t + 17] = (tcpCsum and 0xFF).toByte()
-
-        fixIpChecksum(pkt)
-        return pkt
-    }
-
-    // ===== 构建 UDP 包 =====
-
-    private fun buildUdpPacket(
-        srcIp: String, srcPort: Int,
-        dstIp: String, dstPort: Int,
-        payload: ByteArray
-    ): ByteArray {
-        val ipLen = 20
-        val udpLen = 8 + payload.size
-        val total = ipLen + udpLen
-        val pkt = ByteArray(total)
-
-        pkt[0] = 0x45.toByte()
-        pkt[2] = ((total shr 8) and 0xFF).toByte()
-        pkt[3] = (total and 0xFF).toByte()
-        pkt[6] = 0x40.toByte()
-        pkt[8] = 64
-        pkt[9] = 17
-        writeIp(pkt, 12, srcIp)
-        writeIp(pkt, 16, dstIp)
-
-        val u = ipLen
-        pkt[u] = ((srcPort shr 8) and 0xFF).toByte()
-        pkt[u + 1] = (srcPort and 0xFF).toByte()
-        pkt[u + 2] = ((dstPort shr 8) and 0xFF).toByte()
-        pkt[u + 3] = (dstPort and 0xFF).toByte()
-        pkt[u + 4] = ((udpLen shr 8) and 0xFF).toByte()
-        pkt[u + 5] = (udpLen and 0xFF).toByte()
-
-        System.arraycopy(payload, 0, pkt, u + 8, payload.size)
-        fixIpChecksum(pkt)
-        return pkt
-    }
-
-    // ===== 校验和 =====
-
-    private fun fixIpChecksum(pkt: ByteArray) {
-        pkt[10] = 0; pkt[11] = 0
-        val c = checksum(pkt, 0, 20)
-        pkt[10] = ((c shr 8) and 0xFF).toByte()
-        pkt[11] = (c and 0xFF).toByte()
-    }
-
-    private fun checksum(data: ByteArray, off: Int, len: Int): Int {
-        var sum = 0L
-        var i = off
-        var rem = len
-        while (rem > 1) {
-            sum += ((data[i].toInt() and 0xFF) shl 8) or (data[i + 1].toInt() and 0xFF)
-            i += 2; rem -= 2
-        }
-        if (rem == 1) sum += (data[i].toInt() and 0xFF) shl 8
-        while (sum shr 16 != 0L) sum = (sum and 0xFFFF) + (sum shr 16)
-        return sum.toInt().inv() and 0xFFFF
-    }
-
-    private fun tcpChecksum(pkt: ByteArray, tcpOff: Int, srcIp: String, dstIp: String): Int {
-        val tcpLen = pkt.size - tcpOff
-        val pseudo = ByteArray(12)
-        writeIp(pseudo, 0, srcIp)
-        writeIp(pseudo, 4, dstIp)
-        pseudo[9] = 6
-        pseudo[10] = ((tcpLen shr 8) and 0xFF).toByte()
-        pseudo[11] = (tcpLen and 0xFF).toByte()
-
-        val saved = byteArrayOf(pkt[tcpOff + 16], pkt[tcpOff + 17])
-        pkt[tcpOff + 16] = 0; pkt[tcpOff + 17] = 0
-
-        val combined = ByteArray(12 + tcpLen)
-        System.arraycopy(pseudo, 0, combined, 0, 12)
-        System.arraycopy(pkt, tcpOff, combined, 12, tcpLen)
-        val c = checksum(combined, 0, combined.size)
-
-        pkt[tcpOff + 16] = saved[0]; pkt[tcpOff + 17] = saved[1]
-        return c
-    }
-
-    // ===== IO 工具 =====
-
-    private fun writeTun(data: ByteArray) {
         try {
-            synchronized(tunOutput) {
-                tunOutput.write(data)
-                tunOutput.flush()
-            }
-        } catch (e: IOException) {
-            Log.e(TAG, "TUN write error", e)
-        }
+            synchronized(tunOutput) { tunOutput.write(pkt); tunOutput.flush() }
+        } catch (e: IOException) { Log.e(TAG, "Write error", e) }
     }
 
-    private fun readIp(data: ByteArray, off: Int) =
-        "${data[off].toInt() and 0xFF}.${data[off+1].toInt() and 0xFF}.${data[off+2].toInt() and 0xFF}.${data[off+3].toInt() and 0xFF}"
+    // ========== 工具方法 ==========
+    private fun ip(d: ByteArray, o: Int) = "${d[o].toInt() and 0xFF}.${d[o+1].toInt() and 0xFF}.${d[o+2].toInt() and 0xFF}.${d[o+3].toInt() and 0xFF}"
+    private fun u16(d: ByteArray, o: Int) = ((d[o].toInt() and 0xFF) shl 8) or (d[o+1].toInt() and 0xFF)
+    private fun u32(d: ByteArray, o: Int): Long = ((d[o].toLong() and 0xFF) shl 24) or ((d[o+1].toLong() and 0xFF) shl 16) or ((d[o+2].toLong() and 0xFF) shl 8) or (d[o+3].toLong() and 0xFF)
+    private fun w16(d: ByteArray, o: Int, v: Int) { d[o] = ((v shr 8) and 0xFF).toByte(); d[o+1] = (v and 0xFF).toByte() }
+    private fun w32(d: ByteArray, o: Int, v: Long) { d[o] = ((v shr 24) and 0xFF).toByte(); d[o+1] = ((v shr 16) and 0xFF).toByte(); d[o+2] = ((v shr 8) and 0xFF).toByte(); d[o+3] = (v and 0xFF).toByte() }
+    private fun wIp(d: ByteArray, o: Int, ip: String) { val p = ip.split("."); for (i in 0..3) d[o+i] = p[i].toInt().toByte() }
 
-    private fun writeIp(data: ByteArray, off: Int, ip: String) {
-        ip.split(".").forEachIndexed { i, s -> data[off + i] = s.toInt().toByte() }
+    private fun ipCsum(pkt: ByteArray) {
+        pkt[10] = 0; pkt[11] = 0
+        var sum = 0L
+        for (i in 0 until 20 step 2) sum += ((pkt[i].toInt() and 0xFF) shl 8) or (pkt[i+1].toInt() and 0xFF)
+        while (sum shr 16 != 0L) sum = (sum and 0xFFFF) + (sum shr 16)
+        val c = sum.toInt().inv() and 0xFFFF
+        pkt[10] = ((c shr 8) and 0xFF).toByte(); pkt[11] = (c and 0xFF).toByte()
     }
 
-    private fun readU16(data: ByteArray, off: Int) =
-        ((data[off].toInt() and 0xFF) shl 8) or (data[off + 1].toInt() and 0xFF)
-
-    private fun readU32(data: ByteArray, off: Int): Long =
-        ((data[off].toLong() and 0xFF) shl 24) or
-        ((data[off+1].toLong() and 0xFF) shl 16) or
-        ((data[off+2].toLong() and 0xFF) shl 8) or
-        (data[off+3].toLong() and 0xFF)
-
-    private fun writeU32(data: ByteArray, off: Int, v: Long) {
-        data[off] = ((v shr 24) and 0xFF).toByte()
-        data[off+1] = ((v shr 16) and 0xFF).toByte()
-        data[off+2] = ((v shr 8) and 0xFF).toByte()
-        data[off+3] = (v and 0xFF).toByte()
+    private fun tcpCsum(pkt: ByteArray, t: Int, srcIp: String, dstIp: String) {
+        val tcpLen = pkt.size - t
+        val pseudo = ByteArray(12 + tcpLen)
+        wIp(pseudo, 0, srcIp); wIp(pseudo, 4, dstIp)
+        pseudo[8] = 0; pseudo[9] = 6
+        pseudo[10] = ((tcpLen shr 8) and 0xFF).toByte(); pseudo[11] = (tcpLen and 0xFF).toByte()
+        pkt[t+16] = 0; pkt[t+17] = 0
+        System.arraycopy(pkt, t, pseudo, 12, tcpLen)
+        var sum = 0L
+        for (i in pseudo.indices step 2) sum += ((pseudo[i].toInt() and 0xFF) shl 8) or (if (i+1 < pseudo.size) (pseudo[i+1].toInt() and 0xFF) else 0)
+        while (sum shr 16 != 0L) sum = (sum and 0xFFFF) + (sum shr 16)
+        val c = sum.toInt().inv() and 0xFFFF
+        pkt[t+16] = ((c shr 8) and 0xFF).toByte(); pkt[t+17] = (c and 0xFF).toByte()
     }
 }

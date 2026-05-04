@@ -14,7 +14,7 @@
         android:background="#16213e">
 
         <Button
-            android:id="@+id/btn_back"
+            android:id="@+id/btnBack"
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:text="←"
@@ -23,7 +23,7 @@
             android:background="@android:color/transparent"/>
 
         <TextView
-            android:id="@+id/tv_breadcrumb"
+            android:id="@+id/tvTitle"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
@@ -33,11 +33,30 @@
             android:layout_marginStart="8dp"/>
     </LinearLayout>
 
+    <TextView
+        android:id="@+id/tvCurrent"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="当前: 未选择"
+        android:textSize="13sp"
+        android:textColor="#8EACCD"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="8dp"
+        android:background="#0f3460"/>
+
+    <ProgressBar
+        android:id="@+id/progressLoad"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:padding="16dp"
+        android:visibility="gone"/>
+
     <ListView
-        android:id="@+id/list_locations"
+        android:id="@+id/listLocations"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:divider="#333333"
+        android:divider="#333355"
         android:dividerHeight="1dp"
         android:padding="8dp"
         android:cacheColorHint="#1a1a2e"/>
