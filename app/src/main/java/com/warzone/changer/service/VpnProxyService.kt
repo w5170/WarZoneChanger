@@ -14,20 +14,16 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.InetAddress
 
-/**
- * VPN 代理服务（只路由目标 IP）
- *
- * 核心改进：不再路由所有流量！
- * 只把 apis.map.qq.com 的 IP 通过 VPN，其余流量走真实网络。
- * 这样 DNS/其他服务器连接完全不受影响。
- */
 class VpnProxyService : VpnService() {
 
     companion object {
         private const val TAG = "VpnProxyService"
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "warzone_vpn"
-        var isRunning = false; private set
+        const val ACTION_STATUS = "com.warzone.changer.VPN_STATUS"
+        const val EXTRA_RUNNING = "running"
+        const val EXTRA_ERROR = "error"
+        @Volatile var isRunning = false; private set
     }
 
     private var vpnInterface: ParcelFileDescriptor? = null
@@ -38,10 +34,15 @@ class VpnProxyService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "STOP") { stopVpn(); return START_NOT_STICKY }
         if (isRunning) return START_STICKY
+        Log.i(TAG, "onStartCommand: starting foreground")
         startForeground(NOTIFICATION_ID, createNotification("正在启动..."))
         Thread {
-            try { startVpn() } catch (e: Exception) {
-                Log.e(TAG, "VPN start failed", e); stopSelf()
+            try {
+                startVpn()
+            } catch (e: Exception) {
+                Log.e(TAG, "VPN start failed", e)
+                sendStatus(false, e.message ?: "未知错误")
+                stopSelf()
             }
         }.start()
         return START_STICKY
@@ -52,65 +53,81 @@ class VpnProxyService : VpnService() {
         val adcode = location?.adcode ?: "110101"
         Log.i(TAG, "Starting VPN, adcode=$adcode")
 
-        // 解析目标域名
         val targetIps = mutableSetOf<String>()
         try {
             for (addr in InetAddress.getAllByName("apis.map.qq.com")) {
                 targetIps.add(addr.hostAddress!!)
-                Log.d(TAG, "Target IP: ${addr.hostAddress}")
+                Log.i(TAG, "Resolved: apis.map.qq.com -> ${addr.hostAddress}")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "DNS resolve failed", e)
+            Log.e(TAG, "DNS failed, using fallback", e)
             targetIps.add("101.89.46.62"); targetIps.add("101.89.46.61")
         }
 
         val fakeResponse = buildFakeHttpResponse(adcode)
 
-        // === 关键：只路由目标 IP，不路由所有流量 ===
         val builder = Builder()
             .addAddress("10.0.0.2", 32)
             .setSession("WarZoneChanger")
             .setMtu(1500)
             .setBlocking(true)
 
-        // 只添加目标 IP 的路由
         for (ip in targetIps) {
             builder.addRoute(ip, 32)
-            Log.d(TAG, "Route added: $ip/32")
+            Log.i(TAG, "Route: $ip/32")
         }
 
         vpnInterface = builder.establish()
-        if (vpnInterface == null) { Log.e(TAG, "VPN null!"); stopSelf(); return }
+        if (vpnInterface == null) {
+            val err = "VPN establish() returned null"
+            Log.e(TAG, err)
+            sendStatus(false, err)
+            stopSelf()
+            return
+        }
 
-        val fd = vpnInterface!!
+        Log.i(TAG, "VPN interface established, fd=${vpnInterface!!.fd}")
+
         packetHandler = PacketHandler(
-            tunInput = FileInputStream(fd.fileDescriptor),
-            tunOutput = FileOutputStream(fd.fileDescriptor),
+            tunInput = FileInputStream(vpnInterface!!.fileDescriptor),
+            tunOutput = FileOutputStream(vpnInterface!!.fileDescriptor),
             targetIps = targetIps,
             fakeHttpResponse = fakeResponse
         )
 
         isRunning = true
         packetHandler?.start()
-        Log.i(TAG, "VPN started, only routing: $targetIps")
+        sendStatus(true, null)
         updateNotification("运行中 adcode=$adcode")
+        Log.i(TAG, "VPN running! Target IPs: $targetIps")
     }
 
     private fun stopVpn() {
-        isRunning = false; packetHandler?.stop(); packetHandler = null
+        Log.i(TAG, "Stopping VPN")
+        isRunning = false
+        packetHandler?.stop()
+        packetHandler = null
         try { vpnInterface?.close() } catch (_: Exception) {}
-        vpnInterface = null; stopForeground(true); stopSelf()
+        vpnInterface = null
+        sendStatus(false, null)
+        stopForeground(true)
+        stopSelf()
     }
 
     override fun onDestroy() { stopVpn(); super.onDestroy() }
 
+    private fun sendStatus(running: Boolean, error: String?) {
+        val intent = Intent(ACTION_STATUS).apply {
+            putExtra(EXTRA_RUNNING, running)
+            if (error != null) putExtra(EXTRA_ERROR, error)
+            setPackage(packageName)
+        }
+        sendBroadcast(intent)
+        Log.d(TAG, "Status broadcast: running=$running, error=$error")
+    }
+
     private fun buildFakeHttpResponse(adcode: String): ByteArray {
-        val json = """
-            {"status":0,"message":"query ok","request_id":"fake001",
-             "result":{"ad_info":{"adcode":"$adcode","nation":"中国","province":"","city":"","district":""},
-             "location":{"lat":39.9042,"lng":116.4074},
-             "formatted_addresses":{"recommend":"","rough":""}}}
-        """.trimIndent()
+        val json = """{"status":0,"message":"query ok","request_id":"fake001","result":{"ad_info":{"adcode":"$adcode","nation":"中国","province":"","city":"","district":""},"location":{"lat":39.9042,"lng":116.4074},"formatted_addresses":{"recommend":"","rough":""}}}"""
         val body = json.toByteArray(Charsets.UTF_8)
         val header = "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${body.size}\r\nConnection: close\r\nServer: TencentMapHTTPServer\r\n\r\n"
         return header.toByteArray(Charsets.US_ASCII) + body
@@ -131,6 +148,7 @@ class VpnProxyService : VpnService() {
     }
 
     private fun updateNotification(text: String) {
-        getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, createNotification(text))
+        try { getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, createNotification(text)) }
+        catch (_: Exception) {}
     }
 }
