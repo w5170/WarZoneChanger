@@ -1,9 +1,9 @@
 package com.warzone.changer.ui
 
 import android.app.Activity
-import android.content.Intent
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
 import android.content.IntentFilter
 import android.net.VpnService
 import android.os.Bundle
@@ -11,6 +11,7 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import com.warzone.changer.R
 import com.warzone.changer.data.LocationStore
 import com.warzone.changer.service.VpnProxyService
@@ -26,6 +27,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvLocation: TextView
     private lateinit var btnToggle: Button
     private lateinit var btnSelectLocation: Button
+
+    private val vpnStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            updateUI()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,29 +57,19 @@ class MainActivity : AppCompatActivity() {
         }
 
         updateUI()
-
-        // 监听 VPN 状态变化
-        registerReceiver(vpnStateReceiver, IntentFilter("com.warzone.action.VPN_STATE_CHANGED"), RECEIVER_NOT_EXPORTED)
-    }
-
-    private val vpnStateReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            updateUI()
-        }
     }
 
     override fun onResume() {
         super.onResume()
         updateUI()
-
-        // 监听 VPN 状态变化
-        registerReceiver(vpnStateReceiver, IntentFilter("com.warzone.action.VPN_STATE_CHANGED"), RECEIVER_NOT_EXPORTED)
+        // 注册 VPN 状态监听
+        val filter = IntentFilter("com.warzone.action.VPN_STATE_CHANGED")
+        ContextCompat.registerReceiver(this, vpnStateReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
-    private val vpnStateReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            updateUI()
-        }
+    override fun onPause() {
+        super.onPause()
+        try { unregisterReceiver(vpnStateReceiver) } catch (_: Exception) {}
     }
 
     private fun updateUI() {
@@ -138,11 +135,5 @@ class MainActivity : AppCompatActivity() {
                 updateUI()
             }
         }
-    }
-}
-
-    override fun onDestroy() {
-        try { unregisterReceiver(vpnStateReceiver) } catch (_: Exception) {}
-        super.onDestroy()
     }
 }
