@@ -317,10 +317,6 @@ class PacketHandler(private val vpnService: VpnService) {
             output.write(finPacket)
             output.flush()
         }
-        synchronized(output) {
-            output.write(packet)
-            output.flush()
-        }
     }
 
     /**
