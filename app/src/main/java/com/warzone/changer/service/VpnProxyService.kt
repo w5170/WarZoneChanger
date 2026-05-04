@@ -37,9 +37,8 @@ class VpnProxyService : VpnService() {
         Log.i(TAG, "onStartCommand: starting foreground")
         startForeground(NOTIFICATION_ID, createNotification("正在启动..."))
         Thread {
-            try {
-                startVpn()
-            } catch (e: Exception) {
+            try { startVpn() }
+            catch (e: Exception) {
                 Log.e(TAG, "VPN start failed", e)
                 sendStatus(false, e.message ?: "未知错误")
                 stopSelf()
@@ -51,8 +50,9 @@ class VpnProxyService : VpnService() {
     private fun startVpn() {
         val location = LocationStore.getSelectedLocation(this)
         val adcode = location?.adcode ?: "110101"
-        Log.i(TAG, "Starting VPN, adcode=$adcode")
+        Log.i(TAG, "Starting VPN, adcode=$adcode, loc=${location?.displayName}")
 
+        // 解析目标域名
         val targetIps = mutableSetOf<String>()
         try {
             for (addr in InetAddress.getAllByName("apis.map.qq.com")) {
@@ -61,45 +61,49 @@ class VpnProxyService : VpnService() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "DNS failed, using fallback", e)
-            targetIps.add("101.89.46.62"); targetIps.add("101.89.46.61")
+            targetIps.add("101.89.46.62")
+            targetIps.add("101.89.46.61")
         }
 
         val fakeResponse = buildFakeHttpResponse(adcode)
 
+        // 标准 VPN 配置：路由全部流量
         val builder = Builder()
-            .addAddress("10.0.0.2", 32)
-            .setSession("WarZoneChanger")
+            .addAddress("10.0.0.2", 24)
+            .addRoute("0.0.0.0", 0)
+            .addDnsServer("8.8.8.8")
+            .addDnsServer("114.114.114.114")
             .setMtu(1500)
+            .setSession("WarZoneChanger")
             .setBlocking(true)
 
-        for (ip in targetIps) {
-            builder.addRoute(ip, 32)
-            Log.i(TAG, "Route: $ip/32")
-        }
-
+        Log.i(TAG, "Establishing VPN...")
         vpnInterface = builder.establish()
         if (vpnInterface == null) {
-            val err = "VPN establish() returned null"
+            val err = "VPN establish() returned null - 权限不足或被其他VPN占用"
             Log.e(TAG, err)
             sendStatus(false, err)
             stopSelf()
             return
         }
 
-        Log.i(TAG, "VPN interface established, fd=${vpnInterface!!.fd}")
+        Log.i(TAG, "VPN established, fd=${vpnInterface!!.fd}")
 
+        val fd = vpnInterface!!
         packetHandler = PacketHandler(
-            tunInput = FileInputStream(vpnInterface!!.fileDescriptor),
-            tunOutput = FileOutputStream(vpnInterface!!.fileDescriptor),
+            tunInput = FileInputStream(fd.fileDescriptor),
+            tunOutput = FileOutputStream(fd.fileDescriptor),
             targetIps = targetIps,
-            fakeHttpResponse = fakeResponse
+            fakeHttpResponse = fakeHttpResponse,
+            protect = { socket -> protect(socket) },
+            vpnService = this
         )
 
         isRunning = true
         packetHandler?.start()
         sendStatus(true, null)
         updateNotification("运行中 adcode=$adcode")
-        Log.i(TAG, "VPN running! Target IPs: $targetIps")
+        Log.i(TAG, "VPN running! Targets: $targetIps")
     }
 
     private fun stopVpn() {
@@ -123,7 +127,6 @@ class VpnProxyService : VpnService() {
             setPackage(packageName)
         }
         sendBroadcast(intent)
-        Log.d(TAG, "Status broadcast: running=$running, error=$error")
     }
 
     private fun buildFakeHttpResponse(adcode: String): ByteArray {
