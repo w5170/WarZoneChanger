@@ -1,7 +1,10 @@
 package com.warzone.changer.service
 
 import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
@@ -10,101 +13,136 @@ import com.github.megatronking.netbare.NetBare
 import com.github.megatronking.netbare.NetBareConfig
 import com.github.megatronking.netbare.NetBareListener
 import com.github.megatronking.netbare.http.HttpInterceptorFactory
-import com.warzone.changer.App
+import com.github.megatronking.netbare.http.HttpVirtualGatewayFactory
+import com.github.megatronking.netbare.ip.IpAddress
+import com.github.megatronking.netbare.ssl.JKS
 import com.warzone.changer.injector.LocationInjector
 import com.warzone.changer.ui.MainActivity
 
+/**
+ * VPN代理服务
+ * 使用NetBare库创建本地VPN，拦截并修改王者荣耀的地图API请求
+ */
 class VpnProxyService : VpnService(), NetBareListener {
 
     companion object {
         private const val TAG = "VpnProxyService"
         private const val NOTIFICATION_ID = 1
-        const val ACTION_STATUS = "com.warzone.changer.VPN_STATUS"
-        const val EXTRA_RUNNING = "running"
-        const val EXTRA_ERROR = "error"
-        @Volatile var isRunning = false; private set
+        const val ACTION_START = "com.warzone.action.START"
+        const val ACTION_STOP = "com.warzone.action.STOP"
+        var isRunning = false
+            private set
     }
-
-    private var netBare: NetBare? = null
 
     override fun onCreate() {
         super.onCreate()
-        netBare = NetBare.get()
+        NetBare.get().attachApplication(application, true)
+        NetBare.get().registerListener(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            "STOP" -> { stopVpn(); return START_NOT_STICKY }
-            else -> startVpn()
+            ACTION_STOP -> {
+                stopVpn()
+                return START_NOT_STICKY
+            }
+            else -> {
+                startVpn()
+            }
         }
         return START_STICKY
     }
 
     private fun startVpn() {
         try {
-            startForeground(NOTIFICATION_ID, createNotification("正在启动..."))
-            val config = NetBareConfig.Builder()
-                .addInterceptorFactory(HttpInterceptorFactory { LocationInjector(applicationContext) })
-                .build()
-            netBare?.start(config)
+            startForeground(NOTIFICATION_ID, createNotification())
+
+            // 创建JKS用于SSL证书管理（即使我们只拦截HTTP也需要）
+            val jks = JKS(
+                this,
+                "warzone",
+                "warzone123".toCharArray(),
+                "WarZone Changer",
+                "WarZone",
+                "WarZone",
+                "WarZone",
+                "WarZone"
+            )
+
+            // 创建拦截器工厂
+            val interceptorFactories = listOf<HttpInterceptorFactory>(
+                HttpInterceptorFactory { LocationInjector(applicationContext) }
+            )
+
+            // 使用默认HTTP配置
+            val config = NetBareConfig.defaultHttpConfig(jks, interceptorFactories)
+
+            NetBare.get().start(config)
             isRunning = true
-            sendStatus(true, null)
-            updateNotification("VPN代理运行中 - 战区已修改")
-            Log.i(TAG, "VPN启动成功")
+            Log.i(TAG, "VPN代理已启动 - 战区修改生效中")
         } catch (e: Exception) {
-            Log.e(TAG, "启动失败", e)
-            sendStatus(false, e.message ?: "启动失败")
+            Log.e(TAG, "启动VPN失败", e)
             stopSelf()
         }
     }
 
     private fun stopVpn() {
         try {
-            netBare?.stop()
+            NetBare.get().stop()
             isRunning = false
-            sendStatus(false, null)
-            Log.i(TAG, "VPN已停止")
-        } catch (e: Exception) { Log.e(TAG, "停止失败", e) }
+            Log.i(TAG, "VPN代理已停止")
+        } catch (e: Exception) {
+            Log.e(TAG, "停止VPN失败", e)
+        }
         stopForeground(true)
         stopSelf()
     }
 
+    private fun createNotification(): Notification {
+        val channelId = "warzone_vpn_channel"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "战区修改器",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.createNotificationChannel(channel)
+        }
+
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, channelId)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+
+        return builder
+            .setContentTitle("战区修改器")
+            .setContentText("VPN代理运行中 - 战区已修改")
+            .setSmallIcon(android.R.drawable.ic_menu_compass)
+            .setContentIntent(pendingIntent)
+            .build()
+    }
+
     override fun onDestroy() {
-        if (isRunning) stopVpn()
+        NetBare.get().unregisterListener(this)
         super.onDestroy()
     }
 
-    // NetBareListener
+    // NetBareListener callbacks
     override fun onServiceStarted() {
-        Log.i(TAG, "NetBare service started")
+        Log.i(TAG, "NetBare服务已启动")
     }
 
     override fun onServiceStopped() {
-        Log.i(TAG, "NetBare service stopped")
+        Log.i(TAG, "NetBare服务已停止")
         isRunning = false
-        sendStatus(false, null)
-    }
-
-    private fun sendStatus(running: Boolean, error: String?) {
-        try {
-            sendBroadcast(Intent(ACTION_STATUS).apply {
-                putExtra(EXTRA_RUNNING, running)
-                if (error != null) putExtra(EXTRA_ERROR, error)
-                setPackage(packageName)
-            })
-        } catch (_: Exception) {}
-    }
-
-    private fun createNotification(text: String): Notification {
-        val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        val b = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, App.CHANNEL_ID)
-                else @Suppress("DEPRECATION") Notification.Builder(this)
-        return b.setContentTitle("战区修改器").setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_menu_compass).setContentIntent(pi).setOngoing(true).build()
-    }
-
-    private fun updateNotification(text: String) {
-        try { getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, createNotification(text)) }
-        catch (_: Exception) {}
     }
 }
