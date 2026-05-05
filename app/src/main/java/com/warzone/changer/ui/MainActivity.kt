@@ -1,10 +1,7 @@
 package com.warzone.changer.ui
 
 import android.app.Activity
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -21,9 +18,9 @@ import com.warzone.changer.service.VpnProxyService
 class MainActivity : Activity() {
 
     companion object {
+        private const val TAG = "MainActivity"
         private const val REQUEST_VPN = 100
         private const val REQUEST_LOCATION = 200
-        private const val TAG = "MainActivity"
     }
 
     private lateinit var tvCurrentLocation: TextView
@@ -31,18 +28,7 @@ class MainActivity : Activity() {
     private lateinit var btnToggle: Button
     private lateinit var btnPickLocation: Button
     private val handler = Handler(Looper.getMainLooper())
-
-    private val statusReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            val running = intent.getBooleanExtra(VpnProxyService.EXTRA_RUNNING, false)
-            val error = intent.getStringExtra(VpnProxyService.EXTRA_ERROR)
-            Log.d(TAG, "Status: running=$running, error=$error")
-            if (error != null) {
-                Toast.makeText(this@MainActivity, "VPN错误: $error", Toast.LENGTH_LONG).show()
-            }
-            updateUI()
-        }
-    }
+    private val refreshRunnable = Runnable { updateUI() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,102 +53,78 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        val filter = IntentFilter(VpnProxyService.ACTION_STATUS)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(statusReceiver, filter)
-        }
         updateUI()
     }
 
     override fun onPause() {
         super.onPause()
-        try { unregisterReceiver(statusReceiver) } catch (_: Exception) {}
+        handler.removeCallbacks(refreshRunnable)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        when (requestCode) {
-            REQUEST_VPN -> {
-                if (resultCode == RESULT_OK) startVpnService()
-                else Toast.makeText(this, "VPN 权限被拒绝", Toast.LENGTH_SHORT).show()
-            }
-            REQUEST_LOCATION -> updateUI()
+        if (requestCode == REQUEST_VPN && resultCode == Activity.RESULT_OK) {
+            startVpnService()
+        } else if (requestCode == REQUEST_LOCATION) {
+            updateUI()
         }
     }
 
     private fun requestVpnPermission() {
         val intent = VpnService.prepare(this)
-        if (intent != null) startActivityForResult(intent, REQUEST_VPN)
-        else startVpnService()
+        if (intent != null) {
+            startActivityForResult(intent, REQUEST_VPN)
+        } else {
+            startVpnService()
+        }
     }
 
     private fun startVpnService() {
-        val location = LocationStore.getSelectedLocation(this)
-        if (location == null) {
-            Toast.makeText(this, "请先选择战区", Toast.LENGTH_SHORT).show()
-            return
-        }
         try {
-            val svcIntent = Intent(this, VpnProxyService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(svcIntent)
-            } else {
-                startService(svcIntent)
+            val intent = Intent(this, VpnProxyService::class.java).apply {
+                action = VpnProxyService.ACTION_START
             }
-            Log.i(TAG, "Service start requested")
-            Toast.makeText(this, "正在启动...", Toast.LENGTH_SHORT).show()
-            // 轮询等待启动
-            pollRunning(0)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            handler.postDelayed({ updateUI() }, 1000)
+            Log.i(TAG, "VPN服务启动请求已发送")
         } catch (e: Exception) {
-            Log.e(TAG, "startService failed", e)
+            Log.e(TAG, "启动VPN服务失败", e)
             Toast.makeText(this, "启动失败: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun pollRunning(attempts: Int) {
-        handler.postDelayed({
-            if (VpnProxyService.isRunning) {
-                updateUI()
-            } else if (attempts < 30) {
-                pollRunning(attempts + 1)
-            } else {
-                Toast.makeText(this, "启动超时，请检查VPN权限和网络", Toast.LENGTH_LONG).show()
-                updateUI()
-            }
-        }, 500)
-    }
-
     private fun stopVpnService() {
         try {
-            val intent = Intent(this, VpnProxyService::class.java).apply { action = "STOP" }
+            val intent = Intent(this, VpnProxyService::class.java).apply {
+                action = VpnProxyService.ACTION_STOP
+            }
             startService(intent)
-            Toast.makeText(this, "已停止", Toast.LENGTH_SHORT).show()
+            handler.postDelayed({ updateUI() }, 500)
         } catch (e: Exception) {
-            Toast.makeText(this, "停止失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            Log.e(TAG, "停止VPN服务失败", e)
         }
-        handler.postDelayed({ updateUI() }, 500)
     }
 
     private fun updateUI() {
         val location = LocationStore.getSelectedLocation(this)
         if (location != null) {
             tvCurrentLocation.text = "当前战区: ${location.displayName}"
-            tvCurrentLocation.setTextColor(0xFF00FF88.toInt())
         } else {
-            tvCurrentLocation.text = "未选择战区"
-            tvCurrentLocation.setTextColor(0xFFFF6B6B.toInt())
+            tvCurrentLocation.text = "当前战区: 未选择"
         }
 
         if (VpnProxyService.isRunning) {
-            tvStatus.text = "● 运行中"
-            tvStatus.setTextColor(0xFF00FF88.toInt())
-            btnToggle.text = "停止"
+            tvStatus.text = "状态: VPN运行中"
+            tvStatus.setTextColor(0xFF4CAF50.toInt())
+            btnToggle.text = "停止VPN"
         } else {
-            tvStatus.text = "○ 已停止"
-            tvStatus.setTextColor(0xFFFF6B6B.toInt())
-            btnToggle.text = "启动"
+            tvStatus.text = "状态: 未运行"
+            tvStatus.setTextColor(0xFF757575.toInt())
+            btnToggle.text = "启动VPN"
         }
     }
 }
