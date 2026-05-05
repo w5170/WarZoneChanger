@@ -11,8 +11,8 @@ android {
         applicationId = "com.warzone.changer"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "2.0.0"
+        versionCode = 3
+        versionName = "3.0.0"
     }
 
     buildTypes {
@@ -36,4 +36,6 @@ android {
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.22")
+    // NetBare - VPN HTTP拦截库
+    implementation("com.github.megatronking:netbare:v2.2.0")
 }

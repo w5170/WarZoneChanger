@@ -1,121 +1,89 @@
 package com.warzone.changer.service
 
 import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
-import android.os.ParcelFileDescriptor
 import android.util.Log
-import com.warzone.changer.data.LocationStore
-import com.warzone.changer.packet.PacketHandler
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.net.InetAddress
+import com.github.megatronking.netbare.NetBare
+import com.github.megatronking.netbare.NetBareConfig
+import com.github.megatronking.netbare.NetBareListener
+import com.github.megatronking.netbare.http.HttpInterceptorFactory
+import com.warzone.changer.App
+import com.warzone.changer.injector.LocationInjector
+import com.warzone.changer.ui.MainActivity
 
-class VpnProxyService : VpnService() {
+class VpnProxyService : VpnService(), NetBareListener {
 
     companion object {
-        private const val TAG = "VpnProxy"
+        private const val TAG = "VpnProxyService"
         private const val NOTIFICATION_ID = 1
-        private const val CHANNEL_ID = "warzone_vpn"
         const val ACTION_STATUS = "com.warzone.changer.VPN_STATUS"
         const val EXTRA_RUNNING = "running"
         const val EXTRA_ERROR = "error"
         @Volatile var isRunning = false; private set
     }
 
-    private var vpnInterface: ParcelFileDescriptor? = null
-    private var packetHandler: PacketHandler? = null
+    private var netBare: NetBare? = null
 
     override fun onCreate() {
         super.onCreate()
-        try { createNotificationChannel() } catch (e: Exception) { Log.e(TAG, "channel", e) }
+        netBare = NetBare.get()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        try {
-            if (intent?.action == "STOP") { stopVpn(); return START_NOT_STICKY }
-            if (isRunning) return START_STICKY
-            startForeground(NOTIFICATION_ID, createNotification("正在启动..."))
-            Thread {
-                try { startVpn() }
-                catch (e: Exception) {
-                    Log.e(TAG, "VPN failed", e)
-                    sendStatus(false, e.message ?: "未知错误")
-                    try { stopSelf() } catch (_: Exception) {}
-                }
-            }.start()
-        } catch (e: Exception) {
-            Log.e(TAG, "onStartCommand", e)
-            sendStatus(false, e.message ?: "启动失败")
+        when (intent?.action) {
+            "STOP" -> { stopVpn(); return START_NOT_STICKY }
+            else -> startVpn()
         }
         return START_STICKY
     }
 
     private fun startVpn() {
-        val location = LocationStore.getSelectedLocation(this)
-        val adcode = location?.adcode ?: "110101"
-        Log.i(TAG, "adcode=$adcode")
-
-        val targetIps = mutableSetOf<String>()
         try {
-            for (addr in InetAddress.getAllByName("apis.map.qq.com")) {
-                targetIps.add(addr.hostAddress!!)
-                Log.i(TAG, "Target: ${addr.hostAddress}")
-            }
+            startForeground(NOTIFICATION_ID, createNotification("正在启动..."))
+            val config = NetBareConfig.Builder()
+                .addInterceptorFactory(HttpInterceptorFactory { LocationInjector(applicationContext) })
+                .build()
+            netBare?.start(config)
+            isRunning = true
+            sendStatus(true, null)
+            updateNotification("VPN代理运行中 - 战区已修改")
+            Log.i(TAG, "VPN启动成功")
         } catch (e: Exception) {
-            Log.e(TAG, "DNS", e)
-            targetIps.add("101.89.46.62"); targetIps.add("101.89.46.61")
+            Log.e(TAG, "启动失败", e)
+            sendStatus(false, e.message ?: "启动失败")
+            stopSelf()
         }
-
-        val fakeResp = buildFakeHttpResponse(adcode)
-
-        val builder = Builder()
-            .addAddress("10.0.0.2", 24)
-            .addRoute("0.0.0.0", 0)
-            .addDnsServer("8.8.8.8")
-            .addDnsServer("114.114.114.114")
-            .setMtu(1500)
-            .setSession("WarZoneChanger")
-            .setBlocking(true)
-
-        vpnInterface = builder.establish()
-        if (vpnInterface == null) {
-            sendStatus(false, "VPN建立失败"); stopSelf(); return
-        }
-        Log.i(TAG, "VPN OK")
-
-        packetHandler = PacketHandler(
-            tunInput = FileInputStream(vpnInterface!!.fileDescriptor),
-            tunOutput = FileOutputStream(vpnInterface!!.fileDescriptor),
-            targetIps = targetIps,
-            fakeHttpResponse = fakeResp,
-            protectTcp = { s -> try { protect(s) } catch (_: Exception) { false } },
-            protectUdp = { s -> try { protect(s) } catch (_: Exception) { false } }
-        )
-
-        isRunning = true
-        packetHandler?.start()
-        sendStatus(true, null)
-        updateNotification("运行中 adcode=$adcode")
-        Log.i(TAG, "Running")
     }
 
     private fun stopVpn() {
-        Log.i(TAG, "Stopping")
-        isRunning = false
-        try { packetHandler?.stop() } catch (_: Exception) {}
-        packetHandler = null
-        try { vpnInterface?.close() } catch (_: Exception) {}
-        vpnInterface = null
-        sendStatus(false, null)
-        try { stopForeground(true) } catch (_: Exception) {}
-        try { stopSelf() } catch (_: Exception) {}
+        try {
+            netBare?.stop()
+            isRunning = false
+            sendStatus(false, null)
+            Log.i(TAG, "VPN已停止")
+        } catch (e: Exception) { Log.e(TAG, "停止失败", e) }
+        stopForeground(true)
+        stopSelf()
     }
 
-    override fun onDestroy() { stopVpn(); super.onDestroy() }
+    override fun onDestroy() {
+        if (isRunning) stopVpn()
+        super.onDestroy()
+    }
+
+    // NetBareListener
+    override fun onServiceStarted() {
+        Log.i(TAG, "NetBare service started")
+    }
+
+    override fun onServiceStopped() {
+        Log.i(TAG, "NetBare service stopped")
+        isRunning = false
+        sendStatus(false, null)
+    }
 
     private fun sendStatus(running: Boolean, error: String?) {
         try {
@@ -127,24 +95,12 @@ class VpnProxyService : VpnService() {
         } catch (_: Exception) {}
     }
 
-    private fun buildFakeHttpResponse(adcode: String): ByteArray {
-        val json = """{"status":0,"message":"query ok","request_id":"f","result":{"ad_info":{"adcode":"$adcode","nation":"中国","province":"","city":"","district":""},"location":{"lat":39.9,"lng":116.4},"formatted_addresses":{"recommend":"","rough":""}}}"""
-        val body = json.toByteArray(Charsets.UTF_8)
-        val hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n"
-        return hdr.toByteArray(Charsets.US_ASCII) + body
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            getSystemService(NotificationManager::class.java)?.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "战区切换", NotificationManager.IMPORTANCE_LOW))
-    }
-
     private fun createNotification(text: String): Notification {
-        val b = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, CHANNEL_ID)
+        val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val b = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, App.CHANNEL_ID)
                 else @Suppress("DEPRECATION") Notification.Builder(this)
-        return b.setContentTitle("WarZoneChanger").setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_menu_compass).setOngoing(true).build()
+        return b.setContentTitle("战区修改器").setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_menu_compass).setContentIntent(pi).setOngoing(true).build()
     }
 
     private fun updateNotification(text: String) {
