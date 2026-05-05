@@ -114,6 +114,22 @@ public final class NetBare {
     }
 
     /**
+     * Store config without starting the service. Use this when you want to start the
+     * service manually via Intent.
+     *
+     * @param config The configuration for NetBare service.
+     */
+    public void prepareConfig(@NonNull NetBareConfig config) {
+        if (config.mtu <= 0) {
+            throw new RuntimeException("Must set mtu in NetBareConfig");
+        }
+        if (config.address == null) {
+            throw new RuntimeException("Must set address in NetBareConfig");
+        }
+        mNetBareConfig = config;
+    }
+
+    /**
      * Stop the NetBare service. If the service is started,
      * {@link NetBareListener#onServiceStopped()} will be invoked.
      */

@@ -10,6 +10,7 @@ import android.widget.Toast
 import com.github.megatronking.netbare.NetBare
 import com.github.megatronking.netbare.NetBareConfig
 import com.github.megatronking.netbare.NetBareListener
+import com.github.megatronking.netbare.NetBareService
 import com.github.megatronking.netbare.http.HttpInjectInterceptor
 import com.github.megatronking.netbare.http.HttpInterceptorFactory
 import com.warzone.changer.App
@@ -47,7 +48,7 @@ class MainActivity : Activity(), NetBareListener {
 
         btnToggle.setOnClickListener {
             if (mNetBare.isActive) {
-                mNetBare.stop()
+                stopVpn()
             } else {
                 prepareNetBare()
             }
@@ -84,9 +85,6 @@ class MainActivity : Activity(), NetBareListener {
         }
     }
 
-    /**
-     * 准备并启动 NetBare —— 不检查证书
-     */
     private fun prepareNetBare() {
         Log.i(TAG, "prepareNetBare 开始")
 
@@ -97,19 +95,38 @@ class MainActivity : Activity(), NetBareListener {
             startActivityForResult(intent, REQUEST_CODE_PREPARE)
             return
         }
-        Log.i(TAG, "VPN权限已有，启动NetBare")
+        Log.i(TAG, "VPN权限已有，启动服务")
 
-        // 启动 NetBare
         try {
+            // 构建配置
             val config = NetBareConfig.defaultHttpConfig(
                 App.getInstance().getJSK(),
                 interceptorFactories()
             )
-            mNetBare.start(config)
-            Log.i(TAG, "NetBare.start() 已调用")
+
+            // 存储配置到 NetBare（不发 intent）
+            mNetBare.prepareConfig(config)
+
+            // 手动启动服务
+            val serviceIntent = Intent(NetBareService.ACTION_START)
+            serviceIntent.setPackage(packageName)
+            startForegroundService(serviceIntent)
+
+            Log.i(TAG, "服务启动命令已发送")
         } catch (e: Exception) {
             Log.e(TAG, "启动失败", e)
             Toast.makeText(this, "启动失败: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun stopVpn() {
+        try {
+            val intent = Intent(NetBareService.ACTION_STOP)
+            intent.setPackage(packageName)
+            startService(intent)
+            Log.i(TAG, "停止命令已发送")
+        } catch (e: Exception) {
+            Log.e(TAG, "停止失败", e)
         }
     }
 
