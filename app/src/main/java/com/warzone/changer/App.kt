@@ -24,7 +24,7 @@ class App : Application() {
         super.onCreate()
         instance = this
 
-        // 创建自签证书
+        // 创建 JKS（不需要安装证书，只用于 HTTP 拦截）
         mJKS = JKS(this, JSK_ALIAS, JSK_ALIAS.toCharArray(),
             JSK_ALIAS, JSK_ALIAS, JSK_ALIAS, JSK_ALIAS, JSK_ALIAS)
 
