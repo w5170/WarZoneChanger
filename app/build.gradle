@@ -34,6 +34,10 @@ android {
     }
 }
 
+configurations.all {
+    exclude group: 'com.google.guava', module: 'listenablefuture'
+}
+
 dependencies {
     implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.22'
     // NetBare dependencies
