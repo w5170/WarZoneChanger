@@ -36,6 +36,7 @@ android {
 
 dependencies {
     implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.22'
-    // NetBare - VPN HTTP拦截库
-    implementation 'com.github.megatronking:netbare:v2.2.0'
+    // NetBare
+    implementation 'com.github.MegatronKing.NetBare-Android:netbare-core:df5b417'
+    implementation 'com.github.MegatronKing.NetBare-Android:netbare-injector:df5b417'
 }
