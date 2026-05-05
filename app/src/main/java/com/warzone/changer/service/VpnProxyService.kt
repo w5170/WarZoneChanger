@@ -4,22 +4,15 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Build
+import android.util.Log
 import com.github.megatronking.netbare.NetBareService
 import com.warzone.changer.App
 import com.warzone.changer.ui.MainActivity
 
-/**
- * VPN服务 - 继承 NetBareService
- * 
- * NetBareService 内部处理 onStartCommand:
- * - ACTION_START → startNetBare() → 建立 VPN
- * - ACTION_STOP → stopNetBare() → 断开 VPN
- * 
- * 无需手动处理启动逻辑。
- */
 class VpnProxyService : NetBareService() {
 
     companion object {
+        private const val TAG = "VpnProxyService"
         private const val NOTIFICATION_ID = 1001
     }
 
@@ -46,5 +39,30 @@ class VpnProxyService : NetBareService() {
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentIntent(pendingIntent)
             .build()
+    }
+
+    /**
+     * 重写 onStartCommand：
+     * 先确保 startForeground 被调用，再处理 VPN 逻辑
+     * 防止 startNetBare() 异常导致 ANR/闪退
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "onStartCommand action=${intent?.action}")
+
+        // ★ 第一时间调用 startForeground，Android 要求 5 秒内必须调用
+        try {
+            startForeground(notificationId(), createNotification())
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground 失败", e)
+        }
+
+        // 再交给父类处理 VPN 启动/停止
+        return try {
+            super.onStartCommand(intent, flags, startId)
+        } catch (e: Exception) {
+            Log.e(TAG, "super.onStartCommand 失败", e)
+            stopSelf()
+            START_NOT_STICKY
+        }
     }
 }
