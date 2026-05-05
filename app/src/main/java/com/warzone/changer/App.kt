@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import com.github.megatronking.netbare.NetBare
 
 class App : Application() {
     companion object {
@@ -12,11 +13,14 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        NetBare.get().attachApplication(this, BuildConfig.DEBUG)
+        createNotificationChannel()
+    }
+
+    private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ch = NotificationChannel(CHANNEL_ID, "战区修改器服务", NotificationManager.IMPORTANCE_LOW)
-            ch.description = "VPN代理服务运行通知"
-            ch.setShowBadge(false)
-            getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+            val channel = NotificationChannel(CHANNEL_ID, "战区修改器", NotificationManager.IMPORTANCE_LOW)
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
         }
     }
 }
