@@ -17,7 +17,7 @@ import java.net.InetAddress
 class VpnProxyService : VpnService() {
 
     companion object {
-        private const val TAG = "VpnProxyService"
+        private const val TAG = "VpnProxy"
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "warzone_vpn"
         const val ACTION_STATUS = "com.warzone.changer.VPN_STATUS"
@@ -29,26 +29,29 @@ class VpnProxyService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
     private var packetHandler: PacketHandler? = null
 
-    override fun onCreate() { super.onCreate(); createNotificationChannel() }
+    override fun onCreate() {
+        super.onCreate()
+        try { createNotificationChannel() } catch (e: Exception) { Log.e(TAG, "channel", e) }
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == "STOP") { stopVpn(); return START_NOT_STICKY }
-        if (isRunning) return START_STICKY
-        Log.i(TAG, "onStartCommand")
         try {
+            if (intent?.action == "STOP") { stopVpn(); return START_NOT_STICKY }
+            if (isRunning) return START_STICKY
             startForeground(NOTIFICATION_ID, createNotification("正在启动..."))
+            Thread {
+                try { startVpn() }
+                catch (e: Exception) {
+                    Log.e(TAG, "VPN failed", e)
+                    sendStatus(false, e.message ?: "未知错误")
+                    try { stopSelf() } catch (_: Exception) {}
+                }
+            }.start()
         } catch (e: Exception) {
-            Log.e(TAG, "startForeground failed", e)
+            Log.e(TAG, "onStartCommand", e)
+            sendStatus(false, e.message ?: "启动失败")
         }
-        Thread {
-            try { startVpn() }
-            catch (e: Exception) {
-                Log.e(TAG, "VPN failed", e)
-                sendStatus(false, e.message ?: "未知错误")
-                // 不自动停止，让用户决定
-            }
-        }.start()
-        return START_STICKY  // 系统杀掉后自动重启
+        return START_STICKY
     }
 
     private fun startVpn() {
@@ -62,7 +65,10 @@ class VpnProxyService : VpnService() {
                 targetIps.add(addr.hostAddress!!)
                 Log.i(TAG, "Target: ${addr.hostAddress}")
             }
-        } catch (e: Exception) { targetIps.add("101.89.46.62"); targetIps.add("101.89.46.61") }
+        } catch (e: Exception) {
+            Log.e(TAG, "DNS", e)
+            targetIps.add("101.89.46.62"); targetIps.add("101.89.46.61")
+        }
 
         val fakeResp = buildFakeHttpResponse(adcode)
 
@@ -76,40 +82,49 @@ class VpnProxyService : VpnService() {
             .setBlocking(true)
 
         vpnInterface = builder.establish()
-        if (vpnInterface == null) { sendStatus(false, "VPN建立失败"); stopSelf(); return }
-        Log.i(TAG, "VPN established")
+        if (vpnInterface == null) {
+            sendStatus(false, "VPN建立失败"); stopSelf(); return
+        }
+        Log.i(TAG, "VPN OK")
 
-        val fd = vpnInterface!!
         packetHandler = PacketHandler(
-            tunInput = FileInputStream(fd.fileDescriptor),
-            tunOutput = FileOutputStream(fd.fileDescriptor),
+            tunInput = FileInputStream(vpnInterface!!.fileDescriptor),
+            tunOutput = FileOutputStream(vpnInterface!!.fileDescriptor),
             targetIps = targetIps,
             fakeHttpResponse = fakeResp,
-            protectFn = { s -> protect(s) },
-            protectDg = { s -> protect(s) }
+            protectTcp = { s -> try { protect(s) } catch (_: Exception) { false } },
+            protectUdp = { s -> try { protect(s) } catch (_: Exception) { false } }
         )
 
         isRunning = true
         packetHandler?.start()
         sendStatus(true, null)
         updateNotification("运行中 adcode=$adcode")
-        Log.i(TAG, "Running! Targets: $targetIps")
+        Log.i(TAG, "Running")
     }
 
     private fun stopVpn() {
-        isRunning = false; packetHandler?.stop(); packetHandler = null
+        Log.i(TAG, "Stopping")
+        isRunning = false
+        try { packetHandler?.stop() } catch (_: Exception) {}
+        packetHandler = null
         try { vpnInterface?.close() } catch (_: Exception) {}
-        vpnInterface = null; sendStatus(false, null); stopForeground(true); stopSelf()
+        vpnInterface = null
+        sendStatus(false, null)
+        try { stopForeground(true) } catch (_: Exception) {}
+        try { stopSelf() } catch (_: Exception) {}
     }
 
     override fun onDestroy() { stopVpn(); super.onDestroy() }
 
     private fun sendStatus(running: Boolean, error: String?) {
-        sendBroadcast(Intent(ACTION_STATUS).apply {
-            putExtra(EXTRA_RUNNING, running)
-            if (error != null) putExtra(EXTRA_ERROR, error)
-            setPackage(packageName)
-        })
+        try {
+            sendBroadcast(Intent(ACTION_STATUS).apply {
+                putExtra(EXTRA_RUNNING, running)
+                if (error != null) putExtra(EXTRA_ERROR, error)
+                setPackage(packageName)
+            })
+        } catch (_: Exception) {}
     }
 
     private fun buildFakeHttpResponse(adcode: String): ByteArray {
