@@ -90,7 +90,8 @@ class PacketHandler(
                     val resp = ByteArray(1024)
                     val pkt = DatagramPacket(resp, resp.size)
                     ds.receive(pkt); ds.close()
-                    writeUdp(dstIp, sp, srcIp, 53, resp.copyOf(pkt.length))
+                    Log.d(TAG, "DNS resp ${pkt.length}b")
+                    writeUdp(dstIp, 53, srcIp, sp, resp.copyOf(pkt.length))
                 } catch (_: Exception) {}
             }, "dns").start()
         } catch (e: Exception) { Log.e(TAG, "dns", e) }
