@@ -13,7 +13,7 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        NetBare.get().attachApplication(this, BuildConfig.DEBUG)
+        NetBare.get().attachApplication(this, false)
         createNotificationChannel()
     }
 
